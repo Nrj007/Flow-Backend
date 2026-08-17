@@ -74,6 +74,49 @@ export async function createTransaction(shopId, data) {
   return item;
 }
 
+/**
+ * Create a dedicated expenditure record with rich fields.
+ */
+export async function createExpenditure(shopId, data) {
+  const txnId = uuidv4();
+  const timestamp = new Date().toISOString();
+  // Use the caller-supplied spend date (YYYY-MM-DD); fall back to today
+  const spendDate = data.date ?? timestamp.slice(0, 10);
+
+  const item = {
+    PK: `SHOP#${shopId}`,
+    // Use spend date in SK so queries/filters work correctly
+    SK: `TXN#${spendDate}T00:00:00.000Z#${txnId}`,
+    entityType: 'TRANSACTION',
+    txnId,
+    shopId,
+    type: 'expenditure',
+    category: data.category,
+    amount: data.amount,
+    vendor: data.vendor ?? data.paidTo ?? '',
+    paidTo: data.paidTo ?? data.vendor ?? '',
+    paymentMode: data.paymentMode,
+    date: spendDate,
+    note: data.note ?? '',
+    receiptUrl: data.receiptUrl ?? null,
+    recordedBy: data.recordedBy,
+    createdBy: data.recordedBy,
+    source: 'manual',
+    createdAt: timestamp,
+  };
+
+  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
+  return item;
+}
+
+/**
+ * List only expenditure-type transactions for a shop, with optional date filters.
+ */
+export async function listExpenditures(shopId, { date, from, to } = {}) {
+  const all = await listTransactions(shopId, { date, from, to });
+  return all.filter((t) => t.type === 'expenditure');
+}
+
 function summarizeTransactions(transactions) {
   let income = 0;
   let expense = 0;
@@ -86,7 +129,8 @@ function summarizeTransactions(transactions) {
       if (txn.source === 'order') orderIncome += txn.amount;
       else manualIncome += txn.amount;
     }
-    if (txn.type === 'expense') expense += txn.amount;
+    // Both legacy 'expense' and new 'expenditure' count as expenses
+    if (txn.type === 'expense' || txn.type === 'expenditure') expense += txn.amount;
   }
 
   return {

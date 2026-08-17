@@ -11,6 +11,13 @@ import { docClient, TABLE_NAME } from '../../config/db.js';
 import { ROLES } from '../../constants/roles.js';
 import { sanitizePermissions } from '../../utils/permissions.js';
 import { hashPassword } from '../../utils/password.js';
+import {
+  getReorderThreshold,
+  getStockQty,
+  getUnitPrice,
+  isLowStock,
+  isOutOfStock,
+} from '../../utils/product.js';
 
 export async function getShopById(shopId) {
   const result = await docClient.send(
@@ -364,10 +371,10 @@ export async function getShopAnalytics(shopId) {
     }
   }
 
-  const lowStock = products.filter((p) => p.quantity <= 5);
-  const outOfStock = products.filter((p) => p.quantity === 0);
+  const lowStock = products.filter((p) => isLowStock(p));
+  const outOfStock = products.filter((p) => isOutOfStock(p));
   const inventoryValue = products.reduce(
-    (sum, p) => sum + (p.price ?? 0) * (p.quantity ?? 0),
+    (sum, p) => sum + getUnitPrice(p) * getStockQty(p),
     0
   );
 
@@ -408,15 +415,16 @@ export async function getShopAnalytics(shopId) {
     },
     inventory: {
       productCount: products.length,
-      totalUnits: products.reduce((sum, p) => sum + (p.quantity ?? 0), 0),
+      totalUnits: products.reduce((sum, p) => sum + getStockQty(p), 0),
       inventoryValue,
       lowStockCount: lowStock.length,
       outOfStockCount: outOfStock.length,
       lowStockItems: lowStock.slice(0, 5).map((p) => ({
         productId: p.productId,
         name: p.name,
-        quantity: p.quantity,
-        price: p.price,
+        quantity: getStockQty(p),
+        reorderThreshold: getReorderThreshold(p),
+        price: getUnitPrice(p),
       })),
     },
     orders: {

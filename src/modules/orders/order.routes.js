@@ -24,6 +24,7 @@ const placeOrderSchema = z.object({
         z.object({
           productId: z.string().uuid(),
           quantity: z.number().int().positive(),
+          discPct: z.number().min(0).max(100).optional(),
         })
       )
       .min(1),
@@ -37,6 +38,7 @@ const onsiteOrderSchema = z.object({
         z.object({
           productId: z.string().uuid(),
           quantity: z.number().int().positive(),
+          discPct: z.number().min(0).max(100).optional(),
         })
       )
       .min(1),

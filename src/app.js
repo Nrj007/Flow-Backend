@@ -7,6 +7,7 @@ import authRoutes from './modules/auth/auth.routes.js';
 import shopRoutes from './modules/shops/shop.router.js';
 import userRoutes from './modules/users/user.router.js';
 import { inventoryRouter, publicProductsRouter } from './modules/inventory/inventory.routes.js';
+import offersRoutes from './modules/offers/offer.routes.js';
 import financeRoutes from './modules/finance/finance.routes.js';
 import { studentRouter, shopRouter } from './modules/orders/order.routes.js';
 
@@ -30,6 +31,7 @@ app.use('/api/shops', shopRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/shops/:shopId/products', inventoryRouter);
 app.use('/api/shops/:shopId/catalog', publicProductsRouter);
+app.use('/api/shops/:shopId/offers', offersRoutes);
 app.use('/api/shops/:shopId/finance', financeRoutes);
 app.use('/api/shops/:shopId/orders', shopRouter);
 app.use('/api/orders', studentRouter);

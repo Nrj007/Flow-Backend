@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { docClient, TABLE_NAME } from '../../config/db.js';
+import { normalizeProductInput } from '../../utils/product.js';
 
 export async function listProducts(shopId) {
   const result = await docClient.send(
@@ -34,9 +35,10 @@ export async function getProduct(shopId, productId) {
   return result.Item ?? null;
 }
 
-export async function createProduct(shopId, data) {
+export async function createProduct(shopId, data, actorUserId = null) {
   const productId = uuidv4();
   const now = new Date().toISOString();
+  const normalized = normalizeProductInput(data);
 
   const item = {
     PK: `SHOP#${shopId}`,
@@ -44,12 +46,9 @@ export async function createProduct(shopId, data) {
     entityType: 'PRODUCT',
     productId,
     shopId,
-    name: data.name,
-    description: data.description ?? '',
-    quantity: data.quantity,
-    price: data.price,
-    category: data.category ?? 'general',
-    availableOnline: data.availableOnline ?? true,
+    ...normalized,
+    createdBy: actorUserId || data.createdBy || null,
+    updatedBy: actorUserId || data.updatedBy || null,
     createdAt: now,
     updatedAt: now,
   };
@@ -58,31 +57,76 @@ export async function createProduct(shopId, data) {
   return item;
 }
 
-export async function updateProduct(shopId, productId, data) {
+export async function updateProduct(shopId, productId, data, actorUserId = null) {
+  const existing = await getProduct(shopId, productId);
+  if (!existing) return null;
+
+  const merged = {
+    name: data.name ?? existing.name,
+    category: data.category ?? existing.category,
+    description: data.description ?? existing.description,
+    sku: data.sku !== undefined ? data.sku : existing.sku,
+    barcode: data.barcode !== undefined ? data.barcode : existing.barcode,
+    unitPrice: data.unitPrice ?? data.price ?? existing.unitPrice ?? existing.price,
+    costPrice: data.costPrice ?? existing.costPrice ?? 0,
+    quantityInStock:
+      data.quantityInStock ?? data.quantity ?? existing.quantityInStock ?? existing.quantity,
+    unit: data.unit ?? existing.unit ?? 'piece',
+    reorderThreshold: data.reorderThreshold ?? existing.reorderThreshold ?? 5,
+    status: data.status ?? existing.status ?? 'active',
+    imageUrl: data.imageUrl !== undefined ? data.imageUrl : existing.imageUrl,
+    expiryDate: data.expiryDate !== undefined ? data.expiryDate : existing.expiryDate,
+    availableOnline:
+      data.availableOnline !== undefined
+        ? data.availableOnline
+        : existing.availableOnline,
+    taxPercent: data.taxPercent ?? existing.taxPercent ?? 0,
+    supplier:
+      data.supplier !== undefined
+        ? data.supplier
+        : data.supplierName !== undefined || data.supplierContact !== undefined
+          ? {
+              name: data.supplierName ?? existing.supplier?.name ?? '',
+              contact: data.supplierContact ?? existing.supplier?.contact ?? '',
+            }
+          : existing.supplier,
+  };
+
+  const normalized = normalizeProductInput(merged);
+  const now = new Date().toISOString();
+
+  const fields = {
+    name: normalized.name,
+    category: normalized.category,
+    description: normalized.description,
+    sku: normalized.sku,
+    barcode: normalized.barcode,
+    unitPrice: normalized.unitPrice,
+    price: normalized.price,
+    costPrice: normalized.costPrice,
+    quantityInStock: normalized.quantityInStock,
+    quantity: normalized.quantity,
+    unit: normalized.unit,
+    reorderThreshold: normalized.reorderThreshold,
+    status: normalized.status,
+    imageUrl: normalized.imageUrl,
+    supplier: normalized.supplier,
+    expiryDate: normalized.expiryDate,
+    availableOnline: normalized.availableOnline,
+    taxPercent: normalized.taxPercent,
+    updatedAt: now,
+    updatedBy: actorUserId || existing.updatedBy || null,
+  };
+
   const updates = [];
-  const values = { ':now': new Date().toISOString() };
+  const values = {};
   const names = {};
 
-  for (const field of [
-    'name',
-    'description',
-    'quantity',
-    'price',
-    'category',
-    'availableOnline',
-  ]) {
-    if (data[field] !== undefined) {
-      updates.push(`#${field} = :${field}`);
-      names[`#${field}`] = field;
-      values[`:${field}`] = data[field];
-    }
+  for (const [field, value] of Object.entries(fields)) {
+    updates.push(`#${field} = :${field}`);
+    names[`#${field}`] = field;
+    values[`:${field}`] = value;
   }
-
-  if (updates.length === 0) {
-    return getProduct(shopId, productId);
-  }
-
-  updates.push('updatedAt = :now');
 
   const result = await docClient.send(
     new UpdateCommand({

@@ -6,7 +6,10 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { docClient, TABLE_NAME } from '../../config/db.js';
+import { getStockQty, getTaxPercent, getUnitPrice } from '../../utils/product.js';
+import { computeLinePricing, findActiveOfferForProduct, findActiveOrderUnderOffer, computeOrderUnderDiscount, getStockUnitsForLine } from '../../utils/offer.js';
 import { getProduct } from '../inventory/inventory.repository.js';
+import { listOffers } from '../offers/offer.repository.js';
 
 export const ORDER_STATUS = {
   PENDING: 'pending',
@@ -16,44 +19,75 @@ export const ORDER_STATUS = {
 };
 
 async function buildOrderItems(shopId, items) {
-  let total = 0;
+  let linesTotal = 0;
+  let merchSubtotal = 0;
   const orderItems = [];
+  const offers = await listOffers(shopId);
 
   for (const item of items) {
     const product = await getProduct(shopId, item.productId);
     if (!product) {
       throw new Error(`Product not found: ${item.productId}`);
     }
-    if (product.quantity < item.quantity) {
+    const stock = getStockQty(product);
+    const unitPrice = getUnitPrice(product);
+
+    const offer = findActiveOfferForProduct(item.productId, offers);
+    const physicalQuantity = getStockUnitsForLine(item.quantity);
+    if (stock < physicalQuantity) {
       throw new Error(`Insufficient stock for ${product.name}`);
     }
-    const lineTotal = product.price * item.quantity;
-    total += lineTotal;
+
+    const pricing = computeLinePricing({
+      unitPrice,
+      quantity: item.quantity,
+      taxPercent: getTaxPercent(product),
+      discPct: item.discPct ?? 0,
+      offer,
+    });
+
+    linesTotal += pricing.lineTotal;
+    merchSubtotal += pricing.afterOffer - pricing.manualDiscAmt;
     orderItems.push({
       productId: product.productId,
       name: product.name,
-      price: product.price,
+      price: unitPrice,
       quantity: item.quantity,
-      lineTotal,
+      physicalQuantity,
+      discPct: item.discPct ?? 0,
+      offerType: offer?.type || null,
+      offerDiscount: pricing.offerDiscount,
+      discount: pricing.totalDiscount,
+      taxPercent: getTaxPercent(product),
+      taxAmount: pricing.taxAmt,
+      lineTotal: pricing.lineTotal,
     });
   }
 
-  return { orderItems, total };
+  const orderOffer = findActiveOrderUnderOffer(offers);
+  const orderDiscount = computeOrderUnderDiscount(linesTotal, orderOffer);
+  const total = linesTotal - orderDiscount;
+
+  return { orderItems, total, orderDiscount, orderOfferType: orderOffer?.type || null };
 }
 
 function stockDeductUpdates(shopId, orderItems, now) {
-  return orderItems.map((item) => ({
-    Update: {
-      TableName: TABLE_NAME,
-      Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${item.productId}` },
-      UpdateExpression: 'SET quantity = quantity - :qty, updatedAt = :now',
-      ConditionExpression: 'quantity >= :qty',
-      ExpressionAttributeValues: {
-        ':qty': item.quantity,
-        ':now': now,
+  return orderItems.map((item) => {
+    const deductQty = item.physicalQuantity ?? item.quantity;
+    return {
+      Update: {
+        TableName: TABLE_NAME,
+        Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${item.productId}` },
+        UpdateExpression:
+          'SET quantity = quantity - :qty, quantityInStock = if_not_exists(quantityInStock, quantity) - :qty, updatedAt = :now',
+        ConditionExpression: 'quantity >= :qty',
+        ExpressionAttributeValues: {
+          ':qty': deductQty,
+          ':now': now,
+        },
       },
-    },
-  }));
+    };
+  });
 }
 
 function incomeTxnItem(shopId, order, createdBy, now) {
@@ -83,7 +117,7 @@ function incomeTxnItem(shopId, order, createdBy, now) {
 export async function createOrder({ studentId, shopId, items }) {
   const orderId = uuidv4();
   const now = new Date().toISOString();
-  const { orderItems, total } = await buildOrderItems(shopId, items);
+  const { orderItems, total, orderDiscount, orderOfferType } = await buildOrderItems(shopId, items);
 
   const studentOrder = {
     PK: `STUDENT#${studentId}`,
@@ -95,6 +129,8 @@ export async function createOrder({ studentId, shopId, items }) {
     source: 'online',
     items: orderItems,
     total,
+    orderDiscount: orderDiscount || 0,
+    orderOfferType: orderOfferType || null,
     status: ORDER_STATUS.PENDING,
     stockDeducted: false,
     incomeRecorded: false,
@@ -112,6 +148,8 @@ export async function createOrder({ studentId, shopId, items }) {
     source: 'online',
     items: orderItems,
     total,
+    orderDiscount: orderDiscount || 0,
+    orderOfferType: orderOfferType || null,
     status: ORDER_STATUS.PENDING,
     stockDeducted: false,
     incomeRecorded: false,
@@ -143,7 +181,7 @@ export async function createOnsiteOrder({
 }) {
   const orderId = uuidv4();
   const now = new Date().toISOString();
-  const { orderItems, total } = await buildOrderItems(shopId, items);
+  const { orderItems, total, orderDiscount, orderOfferType } = await buildOrderItems(shopId, items);
 
   const status = fulfillImmediately ? ORDER_STATUS.FULFILLED : ORDER_STATUS.PENDING;
   const shopOrder = {
@@ -158,6 +196,8 @@ export async function createOnsiteOrder({
     createdBy,
     items: orderItems,
     total,
+    orderDiscount: orderDiscount || 0,
+    orderOfferType: orderOfferType || null,
     status,
     stockDeducted: fulfillImmediately,
     incomeRecorded: fulfillImmediately,
@@ -240,7 +280,7 @@ export async function updateOrderStatus(shopId, orderId, status, actorUserId) {
     for (const item of shopOrder.items) {
       const product = await getProduct(shopId, item.productId);
       if (!product) throw new Error(`Product not found: ${item.name}`);
-      if (product.quantity < item.quantity) {
+      if (getStockQty(product) < item.quantity) {
         throw new Error(`Insufficient stock for ${item.name}`);
       }
     }
@@ -335,13 +375,16 @@ export async function updateOrderItems(shopId, orderId, items) {
   }
 
   const now = new Date().toISOString();
-  const { orderItems, total } = await buildOrderItems(shopId, cleaned);
+  const { orderItems, total, orderDiscount, orderOfferType } = await buildOrderItems(shopId, cleaned);
 
-  const updateExpression = 'SET #items = :items, #total = :total, updatedAt = :now';
+  const updateExpression =
+    'SET #items = :items, #total = :total, orderDiscount = :orderDiscount, orderOfferType = :orderOfferType, updatedAt = :now';
   const names = { '#items': 'items', '#total': 'total' };
   const values = {
     ':items': orderItems,
     ':total': total,
+    ':orderDiscount': orderDiscount || 0,
+    ':orderOfferType': orderOfferType || null,
     ':now': now,
   };
 
