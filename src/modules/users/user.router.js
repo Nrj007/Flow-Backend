@@ -20,8 +20,7 @@ const router = Router();
 router.post(
   '/staff',
   authenticate,
-  authorize(ROLES.SHOP_MANAGER),
-  requireShopScope,
+  authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER),
   validate(createStaffSchema),
   createStaffHandler
 );

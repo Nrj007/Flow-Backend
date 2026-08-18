@@ -17,6 +17,8 @@ export const createStaffSchema = z.object({
     email: z.string().email(),
     password: z.string().min(8),
     name: z.string().min(1),
+    role: z.enum([ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF]).optional(),
+    shopId: z.string().uuid().optional(),
     permissions: z.array(z.string()).optional(),
   }),
 });
@@ -67,10 +69,18 @@ function assertCanManageUser(actor, target) {
 export async function createStaffHandler(req, res, next) {
   try {
     const { email, password, name, permissions } = req.body;
-    const shopId = req.user.shopId;
+    let shopId = req.user.shopId;
+    let role = ROLES.SHOP_STAFF;
+
+    if (req.user.role === ROLES.SUPER_ADMIN) {
+      shopId = req.body.shopId || req.params.shopId || req.user.shopId;
+      if (req.body.role) {
+        role = req.body.role;
+      }
+    }
 
     if (!shopId) {
-      throw new AppError('Shop scope required', 403, 'NO_SHOP_SCOPE');
+      throw new AppError('Shop scope required', 400, 'NO_SHOP_SCOPE');
     }
 
     const existing = await getUserByEmail(email);
@@ -82,7 +92,7 @@ export async function createStaffHandler(req, res, next) {
       email,
       password,
       name,
-      role: ROLES.SHOP_STAFF,
+      role,
       shopId,
       mustResetPassword: false,
       permissions,

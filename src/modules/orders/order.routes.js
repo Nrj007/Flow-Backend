@@ -6,6 +6,8 @@ import { authorize } from '../../middleware/authorize.js';
 import { scopeToShop } from '../../middleware/scopeToShop.js';
 import { validate } from '../../middleware/validate.js';
 import { AppError } from '../../middleware/errorHandler.js';
+import { recordCustomerSale } from '../customers/customer.repository.js';
+import { saveOrderReceipt } from '../receipts/receipt.repository.js';
 import {
   createOnsiteOrder,
   createOrder,
@@ -43,6 +45,15 @@ const onsiteOrderSchema = z.object({
       )
       .min(1),
     customerName: z.string().optional(),
+    customerId: z.string().uuid().optional().nullable(),
+    customerEmail: z.string().optional().nullable(),
+    customerPhone: z.string().optional().nullable(),
+    paymentMethod: z.enum(['cash', 'upi']).optional(),
+    cashReceived: z.number().optional().nullable(),
+    changeAmount: z.number().optional().nullable(),
+    receiptTemplateId: z.string().uuid().optional().nullable(),
+    receiptTemplateName: z.string().optional().nullable(),
+    receiptHtml: z.string().optional().nullable(),
     fulfillImmediately: z.boolean().optional(),
   }),
 });
@@ -137,14 +148,65 @@ shopRouter.post(
   [...shopOrderAuth, validate(onsiteOrderSchema)],
   async (req, res, next) => {
     try {
+      const paymentMethod = req.body.paymentMethod === 'cash' ? 'cash' : 'upi';
+      const customerName = req.body.customerName || 'Customer';
+
+      let pointsEarned = 0;
+      let linkedCustomerId = req.body.customerId || null;
+
       const order = await createOnsiteOrder({
         shopId: req.params.shopId,
         items: req.body.items,
         createdBy: req.user.userId,
-        customerName: req.body.customerName,
+        customerName,
+        customerId: linkedCustomerId,
+        customerEmail: req.body.customerEmail,
+        customerPhone: req.body.customerPhone,
+        paymentMethod,
+        cashReceived: req.body.cashReceived != null ? Number(req.body.cashReceived) : null,
+        changeAmount: req.body.changeAmount != null ? Number(req.body.changeAmount) : null,
+        pointsEarned: 0,
+        receiptTemplateId: req.body.receiptTemplateId || null,
+        receiptTemplateName: req.body.receiptTemplateName || null,
         fulfillImmediately: req.body.fulfillImmediately ?? true,
       });
-      res.status(201).json({ success: true, data: order });
+
+      if (req.body.fulfillImmediately ?? true) {
+        const saleResult = await recordCustomerSale(req.params.shopId, {
+          customerId: linkedCustomerId,
+          name: req.body.customerName,
+          email: req.body.customerEmail,
+          phone: req.body.customerPhone,
+          orderTotal: order.total,
+        });
+        pointsEarned = saleResult.pointsEarned;
+        if (saleResult.customer) {
+          linkedCustomerId = saleResult.customer.customerId;
+          order.customerId = linkedCustomerId;
+          order.pointsEarned = pointsEarned;
+        }
+      }
+
+      if (req.body.receiptHtml) {
+        await saveOrderReceipt(req.params.shopId, {
+          orderId: order.orderId,
+          templateId: req.body.receiptTemplateId,
+          templateName: req.body.receiptTemplateName,
+          html: req.body.receiptHtml,
+          createdBy: req.user.userId,
+        });
+      }
+
+      res.status(201).json({
+        success: true,
+        data: {
+          ...order,
+          customerId: linkedCustomerId,
+          pointsEarned,
+          cashReceived: order.cashReceived,
+          changeAmount: order.changeAmount,
+        },
+      });
     } catch (err) {
       mapOrderError(err, next);
     }
