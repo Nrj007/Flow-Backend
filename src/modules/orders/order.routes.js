@@ -6,15 +6,20 @@ import { authorize } from '../../middleware/authorize.js';
 import { scopeToShop } from '../../middleware/scopeToShop.js';
 import { validate } from '../../middleware/validate.js';
 import { AppError } from '../../middleware/errorHandler.js';
-import { recordCustomerSale } from '../customers/customer.repository.js';
+import { recordCustomerSale, reverseCustomerSale } from '../customers/customer.repository.js';
+import { computePointsForAmount, getRewardsConfig } from '../rewards/rewards.repository.js';
 import { saveOrderReceipt } from '../receipts/receipt.repository.js';
 import {
   createOnsiteOrder,
   createOrder,
+  createOrderAdjustment,
+  getShopOrder,
+  listOrderAdjustments,
   listShopOrders,
   listStudentOrders,
   ORDER_STATUS,
   updateOrderItems,
+  updateOrderLoyalty,
   updateOrderStatus,
 } from './order.repository.js';
 
@@ -77,6 +82,20 @@ const updateItemsSchema = z.object({
   }),
 });
 
+const adjustOrderSchema = z.object({
+  body: z.object({
+    type: z.enum(['return', 'refund']),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().uuid(),
+          quantity: z.number().int().positive(),
+        })
+      )
+      .min(1),
+  }),
+});
+
 function mapOrderError(err, next) {
   if (
     err.message?.includes('Insufficient stock') ||
@@ -84,7 +103,12 @@ function mapOrderError(err, next) {
     err.message?.includes('Cannot change status') ||
     err.message?.includes('Only pending') ||
     err.message?.includes('Cannot edit') ||
-    err.message?.includes('must have at least')
+    err.message?.includes('must have at least') ||
+    err.message?.includes('Only fulfilled') ||
+    err.message?.includes('Cannot return') ||
+    err.message?.includes('Cannot refund') ||
+    err.message?.includes('Adjustment') ||
+    err.message?.includes('Select at least')
   ) {
     return next(new AppError(err.message, 400, 'ORDER_ERROR'));
   }
@@ -136,8 +160,28 @@ const shopOrderAuth = [
 
 shopRouter.get('/', shopOrderAuth, async (req, res, next) => {
   try {
-    const orders = await listShopOrders(req.params.shopId);
-    res.json({ success: true, data: orders });
+    const result = await listShopOrders(req.params.shopId, {
+      scope: req.query.scope || 'sales',
+      source: req.query.source || 'all',
+      from: req.query.from || undefined,
+      to: req.query.to || undefined,
+      status: req.query.status || undefined,
+      orderType: req.query.orderType || undefined,
+      page: req.query.page,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+shopRouter.get('/:orderId', shopOrderAuth, async (req, res, next) => {
+  try {
+    const order = await getShopOrder(req.params.shopId, req.params.orderId);
+    if (!order) throw new AppError('Order not found', 404, 'NOT_FOUND');
+    const adjustments = await listOrderAdjustments(req.params.shopId, req.params.orderId);
+    res.json({ success: true, data: { ...order, adjustments } });
   } catch (err) {
     next(err);
   }
@@ -184,6 +228,10 @@ shopRouter.post(
           linkedCustomerId = saleResult.customer.customerId;
           order.customerId = linkedCustomerId;
           order.pointsEarned = pointsEarned;
+          await updateOrderLoyalty(req.params.shopId, order.orderId, {
+            customerId: linkedCustomerId,
+            pointsEarned,
+          });
         }
       }
 
@@ -244,6 +292,46 @@ shopRouter.put(
       );
       if (!order) throw new AppError('Order not found', 404, 'NOT_FOUND');
       res.json({ success: true, data: order });
+    } catch (err) {
+      mapOrderError(err, next);
+    }
+  }
+);
+
+shopRouter.post(
+  '/:orderId/adjust',
+  [...shopOrderAuth, validate(adjustOrderSchema)],
+  async (req, res, next) => {
+    try {
+      const result = await createOrderAdjustment(
+        req.params.shopId,
+        req.params.orderId,
+        { type: req.body.type, items: req.body.items },
+        req.user.userId
+      );
+      if (!result) throw new AppError('Order not found', 404, 'NOT_FOUND');
+
+      let pointsReversed = 0;
+      if (result.customerId && result.adjustmentTotal > 0) {
+        const rewardsConfig = await getRewardsConfig(req.params.shopId);
+        pointsReversed = computePointsForAmount(result.adjustmentTotal, rewardsConfig);
+        await reverseCustomerSale(req.params.shopId, {
+          customerId: result.customerId,
+          amount: result.adjustmentTotal,
+          points: pointsReversed,
+          decrementOrderCount: false,
+        });
+      }
+
+      res.status(201).json({
+        success: true,
+        data: {
+          ...result.adjustmentOrder,
+          parentOrderId: result.parentOrderId,
+          adjustmentTotal: result.adjustmentTotal,
+          pointsReversed,
+        },
+      });
     } catch (err) {
       mapOrderError(err, next);
     }

@@ -6,14 +6,10 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { docClient, TABLE_NAME } from '../../config/db.js';
+import { computePointsForAmount, getRewardsConfig } from '../rewards/rewards.repository.js';
 
 export function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '');
-}
-
-export function computePointsForAmount(amount) {
-  const n = Number(amount) || 0;
-  return Math.floor(n / 10);
 }
 
 function customerItem(shopId, data) {
@@ -142,6 +138,35 @@ export async function updateCustomer(shopId, customerId, { name, email, phone })
 /**
  * Create or update customer from a completed sale and award loyalty points.
  */
+export async function reverseCustomerSale(shopId, {
+  customerId,
+  amount,
+  points,
+  decrementOrderCount = false,
+}) {
+  if (!customerId) return null;
+
+  const customer = await getCustomer(shopId, customerId);
+  if (!customer) return null;
+
+  const reversalAmount = Number(amount) || 0;
+  const reversalPoints = Number(points) || 0;
+  const now = new Date().toISOString();
+
+  const updated = {
+    ...customer,
+    points: Math.max(0, (Number(customer.points) || 0) - reversalPoints),
+    totalSpent: Math.max(0, (Number(customer.totalSpent) || 0) - reversalAmount),
+    orderCount: decrementOrderCount
+      ? Math.max(0, (Number(customer.orderCount) || 0) - 1)
+      : customer.orderCount,
+    updatedAt: now,
+  };
+
+  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: updated }));
+  return updated;
+}
+
 export async function recordCustomerSale(shopId, {
   customerId,
   name,
@@ -150,7 +175,8 @@ export async function recordCustomerSale(shopId, {
   orderTotal,
 }) {
   const total = Number(orderTotal) || 0;
-  const pointsEarned = computePointsForAmount(total);
+  const rewardsConfig = await getRewardsConfig(shopId);
+  const pointsEarned = computePointsForAmount(total, rewardsConfig);
   if (total <= 0) return { customer: null, pointsEarned: 0 };
 
   const trimmedName = String(name || '').trim();

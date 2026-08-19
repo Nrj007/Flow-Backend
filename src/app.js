@@ -12,6 +12,7 @@ import financeRoutes from './modules/finance/finance.routes.js';
 import receiptTemplateRoutes from './modules/receipts/receipt.routes.js';
 import customerRoutes from './modules/customers/customer.routes.js';
 import holdRoutes from './modules/holds/hold.routes.js';
+import rewardsRoutes from './modules/rewards/rewards.routes.js';
 import { studentRouter, shopRouter } from './modules/orders/order.routes.js';
 
 const app = express();
@@ -39,6 +40,7 @@ app.use('/api/shops/:shopId/finance', financeRoutes);
 app.use('/api/shops/:shopId/receipt-templates', receiptTemplateRoutes);
 app.use('/api/shops/:shopId/customers', customerRoutes);
 app.use('/api/shops/:shopId/holds', holdRoutes);
+app.use('/api/shops/:shopId/rewards', rewardsRoutes);
 app.use('/api/shops/:shopId/orders', shopRouter);
 app.use('/api/orders', studentRouter);
 

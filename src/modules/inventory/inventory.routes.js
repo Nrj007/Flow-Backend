@@ -11,6 +11,8 @@ import {
   getUnitPrice,
   isProductActive,
 } from '../../utils/product.js';
+import { isOfferActive } from '../../utils/offer.js';
+import { listOffers } from '../offers/offer.repository.js';
 import {
   createProduct,
   deleteProduct,
@@ -164,6 +166,18 @@ publicRouter.get('/', async (req, res, next) => {
         };
       });
     res.json({ success: true, data: publicProducts });
+  } catch (err) {
+    next(err);
+  }
+});
+
+publicRouter.get('/offers', async (req, res, next) => {
+  try {
+    const offers = await listOffers(req.params.shopId);
+    res.json({
+      success: true,
+      data: offers.filter((o) => isOfferActive(o)),
+    });
   } catch (err) {
     next(err);
   }
