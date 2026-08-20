@@ -6,6 +6,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { docClient, TABLE_NAME } from '../../config/db.js';
+import { roundMoney } from '../../utils/money.js';
 
 function toDateKey(isoOrDate) {
   if (!isoOrDate) return null;
@@ -134,12 +135,12 @@ function summarizeTransactions(transactions) {
   }
 
   return {
-    income,
-    expense,
-    net: income - expense,
+    income: roundMoney(income),
+    expense: roundMoney(expense),
+    net: roundMoney(income - expense),
     count: transactions.length,
-    orderIncome,
-    manualIncome,
+    orderIncome: roundMoney(orderIncome),
+    manualIncome: roundMoney(manualIncome),
   };
 }
 
@@ -157,6 +158,7 @@ export async function getDayOpeningBalance(shopId, date) {
 export async function setDayOpeningBalance(shopId, date, openingBalance, createdBy) {
   const now = new Date().toISOString();
   const existing = await getDayOpeningBalance(shopId, date);
+  const balance = roundMoney(openingBalance);
 
   if (existing) {
     const result = await docClient.send(
@@ -166,7 +168,7 @@ export async function setDayOpeningBalance(shopId, date, openingBalance, created
         UpdateExpression:
           'SET openingBalance = :bal, updatedAt = :now, updatedBy = :by',
         ExpressionAttributeValues: {
-          ':bal': openingBalance,
+          ':bal': balance,
           ':now': now,
           ':by': createdBy,
         },
@@ -182,7 +184,7 @@ export async function setDayOpeningBalance(shopId, date, openingBalance, created
     entityType: 'DAY_BALANCE',
     shopId,
     date,
-    openingBalance,
+    openingBalance: balance,
     createdBy,
     createdAt: now,
     updatedAt: now,
@@ -226,7 +228,7 @@ export async function resolveOpeningBalance(shopId, date) {
   const explicit = await getDayOpeningBalance(shopId, date);
   if (explicit) {
     return {
-      openingBalance: explicit.openingBalance,
+      openingBalance: roundMoney(explicit.openingBalance),
       source: 'manual',
       date,
     };
@@ -248,7 +250,7 @@ export async function resolveOpeningBalance(shopId, date) {
     });
     const betweenSum = summarizeTransactions(between);
     return {
-      openingBalance: base.openingBalance + betweenSum.net,
+      openingBalance: roundMoney(base.openingBalance + betweenSum.net),
       source: 'computed',
       fromDate: base.date,
       date,
@@ -262,7 +264,7 @@ export async function resolveOpeningBalance(shopId, date) {
   });
   const beforeSum = summarizeTransactions(before);
   return {
-    openingBalance: beforeSum.net,
+    openingBalance: roundMoney(beforeSum.net),
     source: before.length ? 'computed_from_zero' : 'zero',
     date,
   };
@@ -275,14 +277,14 @@ export async function getDaySummary(shopId, date) {
 
   return {
     date,
-    openingBalance: opening.openingBalance,
+    openingBalance: roundMoney(opening.openingBalance),
     openingSource: opening.source,
     income: day.income,
     expense: day.expense,
     orderIncome: day.orderIncome,
     manualIncome: day.manualIncome,
     net: day.net,
-    closingBalance: opening.openingBalance + day.net,
+    closingBalance: roundMoney(opening.openingBalance + day.net),
     transactionCount: day.count,
     transactions: dayTxns,
   };
