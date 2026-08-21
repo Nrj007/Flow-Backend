@@ -174,6 +174,7 @@ function incomeTxnItem(shopId, order, createdBy, now) {
         note: `${sourceLabel} #${order.orderId.slice(0, 8)} fulfilled`,
         orderId: order.orderId,
         source: 'order',
+        orderSource: order.source === 'onsite' ? 'onsite' : 'online',
         createdBy,
         createdAt: now,
       },
@@ -373,6 +374,15 @@ export async function listShopOrders(shopId, options = {}) {
   } else if (orderType === ORDER_TYPE.REFUND) {
     items = items.filter((o) => o.orderType === ORDER_TYPE.REFUND);
   }
+
+  items.sort((a, b) => {
+    if (scope === 'online') {
+      const statusRank = { pending: 0, confirmed: 1, fulfilled: 2, cancelled: 3 };
+      const rankDifference = (statusRank[a.status] ?? 4) - (statusRank[b.status] ?? 4);
+      if (rankDifference !== 0) return rankDifference;
+    }
+    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+  });
 
   const total = items.length;
   const pageNum = Math.max(1, Number(page) || 1);
