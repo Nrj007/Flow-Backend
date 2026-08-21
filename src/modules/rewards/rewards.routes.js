@@ -7,6 +7,7 @@ import { scopeToShop } from '../../middleware/scopeToShop.js';
 import { validate } from '../../middleware/validate.js';
 import { AppError } from '../../middleware/errorHandler.js';
 import { getRewardsConfig, updateRewardsConfig } from './rewards.repository.js';
+import { createAuditEntry, AUDIT_ACTIONS } from '../audit/audit.repository.js';
 
 const updateSchema = z.object({
   body: z.object({
@@ -44,6 +45,14 @@ router.get('/', rewardsAuth, async (req, res, next) => {
 router.put('/', [...rewardsAuth, validate(updateSchema)], async (req, res, next) => {
   try {
     const config = await updateRewardsConfig(req.params.shopId, req.body);
+    await createAuditEntry({
+      shopId: req.params.shopId,
+      action: AUDIT_ACTIONS.REWARDS_CONFIG_CHANGED,
+      entityType: 'REWARDS_CONFIG',
+      actorId: req.user.userId,
+      actorName: req.user.name,
+      after: config,
+    });
     res.json({ success: true, data: config });
   } catch (err) {
     if (err.message?.includes('must be') || err.message?.includes('cannot be')) {

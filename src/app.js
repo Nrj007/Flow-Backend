@@ -14,6 +14,12 @@ import customerRoutes from './modules/customers/customer.routes.js';
 import holdRoutes from './modules/holds/hold.routes.js';
 import rewardsRoutes from './modules/rewards/rewards.routes.js';
 import { studentRouter, shopRouter } from './modules/orders/order.routes.js';
+import settingsRoutes from './modules/settings/settings.routes.js';
+import purchaseOrderRoutes from './modules/purchase-orders/po.routes.js';
+import shiftRoutes from './modules/shifts/shift.routes.js';
+import auditRoutes from './modules/audit/audit.routes.js';
+import notificationRoutes from './modules/notifications/notification.routes.js';
+import reportRoutes from './modules/reports/report.routes.js';
 
 const app = express();
 
@@ -31,6 +37,8 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/shops', shopRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/shops/:shopId/products', inventoryRouter);
@@ -42,6 +50,10 @@ app.use('/api/shops/:shopId/customers', customerRoutes);
 app.use('/api/shops/:shopId/holds', holdRoutes);
 app.use('/api/shops/:shopId/rewards', rewardsRoutes);
 app.use('/api/shops/:shopId/orders', shopRouter);
+app.use('/api/shops/:shopId/purchase-orders', purchaseOrderRoutes);
+app.use('/api/shops/:shopId/shifts', shiftRoutes);
+app.use('/api/shops/:shopId/audit', auditRoutes);
+app.use('/api/shops/:shopId/reports', reportRoutes);
 app.use('/api/orders', studentRouter);
 
 app.use(notFoundHandler);

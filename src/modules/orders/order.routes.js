@@ -1,14 +1,19 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { PERMISSIONS } from '../../constants/permissions.js';
 import { ROLES } from '../../constants/roles.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
+import { requirePermission } from '../../middleware/requirePermission.js';
 import { scopeToShop } from '../../middleware/scopeToShop.js';
 import { validate } from '../../middleware/validate.js';
 import { AppError } from '../../middleware/errorHandler.js';
 import { recordCustomerSale, reverseCustomerSale } from '../customers/customer.repository.js';
 import { computePointsForAmount, getRewardsConfig } from '../rewards/rewards.repository.js';
 import { saveOrderReceipt } from '../receipts/receipt.repository.js';
+import { createAuditEntry, AUDIT_ACTIONS } from '../audit/audit.repository.js';
+import { getCurrentShift } from '../shifts/shift.repository.js';
+import { createNotification } from '../notifications/notification.repository.js';
 import {
   createOnsiteOrder,
   createOrder,
@@ -129,6 +134,13 @@ studentRouter.post(
         shopId: req.body.shopId,
         items: req.body.items,
       });
+      await createNotification({
+        userId: req.user.userId,
+        shopId: req.body.shopId,
+        type: 'order_placed',
+        title: 'Order placed',
+        body: `Order ${order.orderId.slice(-8)} was placed successfully.`,
+      });
       res.status(201).json({ success: true, data: order });
     } catch (err) {
       mapOrderError(err, next);
@@ -152,13 +164,21 @@ studentRouter.get(
 
 const shopRouter = Router({ mergeParams: true });
 
-const shopOrderAuth = [
+const shopOrderReadAuth = [
   authenticate,
   authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF),
+  requirePermission(PERMISSIONS.ORDERS_VIEW),
   scopeToShop('shopId'),
 ];
 
-shopRouter.get('/', shopOrderAuth, async (req, res, next) => {
+const shopOrderManageAuth = [
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF),
+  requirePermission(PERMISSIONS.ORDERS_MANAGE),
+  scopeToShop('shopId'),
+];
+
+shopRouter.get('/', shopOrderReadAuth, async (req, res, next) => {
   try {
     const result = await listShopOrders(req.params.shopId, {
       scope: req.query.scope || 'sales',
@@ -176,7 +196,7 @@ shopRouter.get('/', shopOrderAuth, async (req, res, next) => {
   }
 });
 
-shopRouter.get('/:orderId', shopOrderAuth, async (req, res, next) => {
+shopRouter.get('/:orderId', shopOrderReadAuth, async (req, res, next) => {
   try {
     const order = await getShopOrder(req.params.shopId, req.params.orderId);
     if (!order) throw new AppError('Order not found', 404, 'NOT_FOUND');
@@ -189,11 +209,14 @@ shopRouter.get('/:orderId', shopOrderAuth, async (req, res, next) => {
 
 shopRouter.post(
   '/onsite',
-  [...shopOrderAuth, validate(onsiteOrderSchema)],
+  [...shopOrderManageAuth, validate(onsiteOrderSchema)],
   async (req, res, next) => {
     try {
       const paymentMethod = req.body.paymentMethod === 'cash' ? 'cash' : 'upi';
       const customerName = req.body.customerName || 'Customer';
+      const currentShift = paymentMethod === 'cash'
+        ? await getCurrentShift(req.params.shopId)
+        : null;
 
       let pointsEarned = 0;
       let linkedCustomerId = req.body.customerId || null;
@@ -209,6 +232,7 @@ shopRouter.post(
         paymentMethod,
         cashReceived: req.body.cashReceived != null ? Number(req.body.cashReceived) : null,
         changeAmount: req.body.changeAmount != null ? Number(req.body.changeAmount) : null,
+        shiftId: currentShift?.shiftId || null,
         pointsEarned: 0,
         receiptTemplateId: req.body.receiptTemplateId || null,
         receiptTemplateName: req.body.receiptTemplateName || null,
@@ -263,7 +287,7 @@ shopRouter.post(
 
 shopRouter.patch(
   '/:orderId/status',
-  [...shopOrderAuth, validate(updateStatusSchema)],
+  [...shopOrderManageAuth, validate(updateStatusSchema)],
   async (req, res, next) => {
     try {
       const order = await updateOrderStatus(
@@ -273,6 +297,26 @@ shopRouter.patch(
         req.user.userId
       );
       if (!order) throw new AppError('Order not found', 404, 'NOT_FOUND');
+      if (req.body.status === ORDER_STATUS.FULFILLED) {
+        await createAuditEntry({
+          shopId: req.params.shopId,
+          action: AUDIT_ACTIONS.ORDER_FULFILLED,
+          entityType: 'ORDER',
+          entityId: order.orderId,
+          actorId: req.user.userId,
+          actorName: req.user.name,
+          after: { status: order.status },
+        });
+      }
+      if (order.studentId) {
+        await createNotification({
+          userId: order.studentId,
+          shopId: req.params.shopId,
+          type: `order_${req.body.status}`,
+          title: `Order ${req.body.status}`,
+          body: `Your order ${order.orderId.slice(-8)} is now ${req.body.status}.`,
+        });
+      }
       res.json({ success: true, data: order });
     } catch (err) {
       mapOrderError(err, next);
@@ -282,7 +326,7 @@ shopRouter.patch(
 
 shopRouter.put(
   '/:orderId/items',
-  [...shopOrderAuth, validate(updateItemsSchema)],
+  [...shopOrderManageAuth, validate(updateItemsSchema)],
   async (req, res, next) => {
     try {
       const order = await updateOrderItems(
@@ -300,7 +344,7 @@ shopRouter.put(
 
 shopRouter.post(
   '/:orderId/adjust',
-  [...shopOrderAuth, validate(adjustOrderSchema)],
+  [...shopOrderManageAuth, validate(adjustOrderSchema)],
   async (req, res, next) => {
     try {
       const result = await createOrderAdjustment(
@@ -310,6 +354,18 @@ shopRouter.post(
         req.user.userId
       );
       if (!result) throw new AppError('Order not found', 404, 'NOT_FOUND');
+
+      await createAuditEntry({
+        shopId: req.params.shopId,
+        action: req.body.type === 'return'
+          ? AUDIT_ACTIONS.RETURN_PROCESSED
+          : AUDIT_ACTIONS.REFUND_PROCESSED,
+        entityType: 'ORDER',
+        entityId: req.params.orderId,
+        actorId: req.user.userId,
+        actorName: req.user.name,
+        after: { adjustmentOrderId: result.adjustmentOrder.orderId, items: req.body.items },
+      });
 
       let pointsReversed = 0;
       if (result.customerId && result.adjustmentTotal > 0) {
@@ -338,4 +394,5 @@ shopRouter.post(
   }
 );
 
-export { studentRouter, shopRouter, ORDER_STATUS };
+export { studentRouter, shopRouter };
+export { ORDER_STATUS } from './order.repository.js';

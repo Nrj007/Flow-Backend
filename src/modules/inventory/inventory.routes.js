@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { PERMISSIONS } from '../../constants/permissions.js';
 import { INVENTORY_ALLOWED_ROLES } from '../../constants/roles.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
+import { requirePermission } from '../../middleware/requirePermission.js';
 import { scopeToShop } from '../../middleware/scopeToShop.js';
 import { validate } from '../../middleware/validate.js';
 import { AppError } from '../../middleware/errorHandler.js';
@@ -13,6 +15,7 @@ import {
 } from '../../utils/product.js';
 import { isOfferActive } from '../../utils/offer.js';
 import { listOffers } from '../offers/offer.repository.js';
+import { createAuditEntry, AUDIT_ACTIONS } from '../audit/audit.repository.js';
 import {
   createProduct,
   deleteProduct,
@@ -75,9 +78,17 @@ const updateSchema = z.object({
   params: z.object({ shopId: z.string().uuid(), productId: z.string().uuid() }),
 });
 
-const inventoryAuth = [
+const inventoryReadAuth = [
   authenticate,
   authorize(...INVENTORY_ALLOWED_ROLES),
+  requirePermission(PERMISSIONS.INVENTORY_VIEW),
+  scopeToShop('shopId'),
+];
+
+const inventoryManageAuth = [
+  authenticate,
+  authorize(...INVENTORY_ALLOWED_ROLES),
+  requirePermission(PERMISSIONS.INVENTORY_MANAGE),
   scopeToShop('shopId'),
 ];
 
@@ -107,6 +118,15 @@ async function createHandler(req, res, next) {
       req.body,
       req.user.userId
     );
+    await createAuditEntry({
+      shopId: req.params.shopId,
+      action: AUDIT_ACTIONS.PRODUCT_CREATED,
+      entityType: 'PRODUCT',
+      entityId: product.productId,
+      actorId: req.user.userId,
+      actorName: req.user.name,
+      after: product,
+    });
     res.status(201).json({ success: true, data: product });
   } catch (err) {
     next(err);
@@ -123,6 +143,18 @@ async function updateHandler(req, res, next) {
       req.body,
       req.user.userId
     );
+    await createAuditEntry({
+      shopId: req.params.shopId,
+      action: existing.unitPrice !== product.unitPrice
+        ? AUDIT_ACTIONS.PRICE_CHANGED
+        : AUDIT_ACTIONS.PRODUCT_UPDATED,
+      entityType: 'PRODUCT',
+      entityId: product.productId,
+      actorId: req.user.userId,
+      actorName: req.user.name,
+      before: existing,
+      after: product,
+    });
     res.json({ success: true, data: product });
   } catch (err) {
     next(err);
@@ -134,6 +166,16 @@ async function deleteHandler(req, res, next) {
     const existing = await getProduct(req.params.shopId, req.params.productId);
     if (!existing) throw new AppError('Product not found', 404, 'NOT_FOUND');
     await deleteProduct(req.params.shopId, req.params.productId);
+    await createAuditEntry({
+      shopId: req.params.shopId,
+      action: AUDIT_ACTIONS.PRODUCT_UPDATED,
+      entityType: 'PRODUCT',
+      entityId: existing.productId,
+      actorId: req.user.userId,
+      actorName: req.user.name,
+      before: existing,
+      meta: { operation: 'deleted' },
+    });
     res.json({ success: true, message: 'Product deleted' });
   } catch (err) {
     next(err);
@@ -142,11 +184,11 @@ async function deleteHandler(req, res, next) {
 
 const router = Router({ mergeParams: true });
 
-router.get('/', inventoryAuth, listHandler);
-router.get('/:productId', inventoryAuth, getHandler);
-router.post('/', [...inventoryAuth, validate(createSchema)], createHandler);
-router.put('/:productId', [...inventoryAuth, validate(updateSchema)], updateHandler);
-router.delete('/:productId', inventoryAuth, deleteHandler);
+router.get('/', inventoryReadAuth, listHandler);
+router.get('/:productId', inventoryReadAuth, getHandler);
+router.post('/', [...inventoryManageAuth, validate(createSchema)], createHandler);
+router.put('/:productId', [...inventoryManageAuth, validate(updateSchema)], updateHandler);
+router.delete('/:productId', inventoryManageAuth, deleteHandler);
 
 const publicRouter = Router({ mergeParams: true });
 

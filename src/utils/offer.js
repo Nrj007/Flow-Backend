@@ -1,3 +1,5 @@
+import { roundMoney } from './money.js';
+
 export const OFFER_TYPES = {
   PERCENT_OFF: 'percent_off',
   FIXED_OFF: 'fixed_off',
@@ -128,8 +130,8 @@ export function computeLinePricing({
   );
   const manualDiscAmt = afterOffer * (Math.min(100, Math.max(0, Number(discPct) || 0)) / 100);
   const taxableBase = afterOffer - manualDiscAmt;
-  const taxAmt = taxableBase * (Math.max(0, Number(taxPercent) || 0) / 100);
-  const lineTotal = taxableBase + taxAmt;
+  const taxAmt = roundMoney(taxableBase * (Math.max(0, Number(taxPercent) || 0) / 100));
+  const lineTotal = roundMoney(taxableBase + taxAmt);
 
   return {
     listGross,

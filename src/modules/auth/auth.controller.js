@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { ROLES } from '../../constants/roles.js';
@@ -234,13 +235,14 @@ export async function sendOtpHandler(req, res, next) {
   try {
     const { email } = req.body;
     if (!email) throw new AppError('Email is required', 400, 'EMAIL_REQUIRED');
-    const code = '123456';
+    const code = String(randomInt(100000, 1000000));
     otpStore.set(email.toLowerCase(), { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-    res.json({
+    const response = {
       success: true,
       message: 'OTP sent to your email',
-      demoOtp: code,
-    });
+    };
+    if (env.nodeEnv !== 'production') response.demoOtp = code;
+    res.json(response);
   } catch (err) {
     next(err);
   }
@@ -251,11 +253,13 @@ export async function verifyOtpHandler(req, res, next) {
     const { email, otp } = req.body;
     if (!email || !otp) throw new AppError('Email and OTP are required', 400, 'FIELDS_REQUIRED');
 
-    const stored = otpStore.get(email.toLowerCase());
-    const valid = (stored && stored.code === otp) || otp === '123456';
+    const emailKey = email.toLowerCase();
+    const stored = otpStore.get(emailKey);
+    const valid = stored && stored.expiresAt > Date.now() && stored.code === otp;
     if (!valid) {
       throw new AppError('Invalid or expired OTP', 401, 'INVALID_OTP');
     }
+    otpStore.delete(emailKey);
 
     let rawUser = await getUserByEmail(email.toLowerCase());
     if (!rawUser) {
