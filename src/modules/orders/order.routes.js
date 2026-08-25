@@ -14,6 +14,7 @@ import { saveOrderReceipt } from '../receipts/receipt.repository.js';
 import { createAuditEntry, AUDIT_ACTIONS } from '../audit/audit.repository.js';
 import { getCurrentShift } from '../shifts/shift.repository.js';
 import { createNotification } from '../notifications/notification.repository.js';
+import { redeemVoucher } from '../gift-vouchers/gift-voucher.repository.js';
 import {
   createOnsiteOrder,
   createOrder,
@@ -61,6 +62,10 @@ const onsiteOrderSchema = z.object({
     paymentMethod: z.enum(['cash', 'upi']).optional(),
     cashReceived: z.number().optional().nullable(),
     changeAmount: z.number().optional().nullable(),
+    pointsRedeemed: z.number().nonnegative().optional(),
+    pointsDiscount: z.number().nonnegative().optional(),
+    voucherCode: z.string().optional().nullable(),
+    voucherDiscount: z.number().nonnegative().optional(),
     receiptTemplateId: z.string().uuid().optional().nullable(),
     receiptTemplateName: z.string().optional().nullable(),
     receiptHtml: z.string().optional().nullable(),
@@ -89,7 +94,7 @@ const updateItemsSchema = z.object({
 
 const adjustOrderSchema = z.object({
   body: z.object({
-    type: z.enum(['return', 'refund']),
+    type: z.enum(['return', 'refund', 'credit_note']),
     items: z
       .array(
         z.object({
@@ -99,6 +104,7 @@ const adjustOrderSchema = z.object({
       )
       .min(1),
   }),
+  params: z.object({ shopId: z.string().uuid(), orderId: z.string().uuid() }),
 });
 
 function mapOrderError(err, next) {
@@ -234,10 +240,27 @@ shopRouter.post(
         changeAmount: req.body.changeAmount != null ? Number(req.body.changeAmount) : null,
         shiftId: currentShift?.shiftId || null,
         pointsEarned: 0,
+        pointsRedeemed: req.body.pointsRedeemed || 0,
+        pointsDiscount: req.body.pointsDiscount || 0,
+        voucherCode: req.body.voucherCode || null,
+        voucherDiscount: req.body.voucherDiscount || 0,
         receiptTemplateId: req.body.receiptTemplateId || null,
         receiptTemplateName: req.body.receiptTemplateName || null,
         fulfillImmediately: req.body.fulfillImmediately ?? true,
       });
+
+      // If voucher code was used and discount > 0, redeem from voucher balance
+      if (req.body.voucherCode && (Number(req.body.voucherDiscount) || 0) > 0) {
+        try {
+          await redeemVoucher(req.params.shopId, req.body.voucherCode, req.body.voucherDiscount, {
+            orderId: order.orderId,
+            note: `Redeemed on Order #${order.orderId.slice(0, 8)}`,
+            actorUser: req.user,
+          });
+        } catch (vchErr) {
+          console.error('Failed to auto-redeem voucher on checkout:', vchErr.message);
+        }
+      }
 
       if (req.body.fulfillImmediately ?? true) {
         const saleResult = await recordCustomerSale(req.params.shopId, {
@@ -246,6 +269,7 @@ shopRouter.post(
           email: req.body.customerEmail,
           phone: req.body.customerPhone,
           orderTotal: order.total,
+          pointsRedeemed: req.body.pointsRedeemed || 0,
         });
         pointsEarned = saleResult.pointsEarned;
         if (saleResult.customer) {
@@ -355,16 +379,25 @@ shopRouter.post(
       );
       if (!result) throw new AppError('Order not found', 404, 'NOT_FOUND');
 
+      const auditAction =
+        req.body.type === 'return'
+          ? AUDIT_ACTIONS.RETURN_PROCESSED
+          : req.body.type === 'credit_note'
+          ? 'credit_note_issued'
+          : AUDIT_ACTIONS.REFUND_PROCESSED;
+
       await createAuditEntry({
         shopId: req.params.shopId,
-        action: req.body.type === 'return'
-          ? AUDIT_ACTIONS.RETURN_PROCESSED
-          : AUDIT_ACTIONS.REFUND_PROCESSED,
+        action: auditAction,
         entityType: 'ORDER',
         entityId: req.params.orderId,
         actorId: req.user.userId,
         actorName: req.user.name,
-        after: { adjustmentOrderId: result.adjustmentOrder.orderId, items: req.body.items },
+        after: {
+          adjustmentOrderId: result.adjustmentOrder.orderId,
+          items: req.body.items,
+          creditNoteCode: result.creditNote?.code || null,
+        },
       });
 
       let pointsReversed = 0;
@@ -386,6 +419,7 @@ shopRouter.post(
           parentOrderId: result.parentOrderId,
           adjustmentTotal: result.adjustmentTotal,
           pointsReversed,
+          creditNote: result.creditNote || null,
         },
       });
     } catch (err) {

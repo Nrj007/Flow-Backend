@@ -11,8 +11,11 @@ import { createAuditEntry, AUDIT_ACTIONS } from '../audit/audit.repository.js';
 
 const updateSchema = z.object({
   body: z.object({
-    rupeesPerPoint: z.number().positive(),
-    pointsPerPurchase: z.number().min(0),
+    pointUnit: z.number().positive().optional(),
+    pointValue: z.number().positive().optional(),
+    rupeesPerPoint: z.number().positive().optional(),
+    pointValueInRupees: z.number().positive().optional(),
+    pointsPerPurchase: z.number().min(0).optional().default(0),
     spendTiers: z
       .array(
         z.object({

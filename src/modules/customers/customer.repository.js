@@ -167,17 +167,62 @@ export async function reverseCustomerSale(shopId, {
   return updated;
 }
 
+export async function deductCustomerPoints(shopId, customerId, points) {
+  if (!customerId || !points || points <= 0) return null;
+  const customer = await getCustomer(shopId, customerId);
+  if (!customer) return null;
+
+  const currentPoints = Number(customer.points) || 0;
+  const newPoints = Math.max(0, currentPoints - Number(points));
+  const now = new Date().toISOString();
+
+  const updated = {
+    ...customer,
+    points: newPoints,
+    updatedAt: now,
+  };
+
+  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: updated }));
+  return updated;
+}
+
+export async function adjustCustomerPoints(shopId, customerId, delta, reason = '') {
+  if (!customerId) return null;
+  const customer = await getCustomer(shopId, customerId);
+  if (!customer) return null;
+
+  const currentPoints = Number(customer.points) || 0;
+  const newPoints = Math.max(0, currentPoints + Number(delta));
+  const now = new Date().toISOString();
+
+  const updated = {
+    ...customer,
+    points: newPoints,
+    lastPointsAdjustment: {
+      delta: Number(delta),
+      reason: String(reason || ''),
+      adjustedAt: now,
+    },
+    updatedAt: now,
+  };
+
+  await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: updated }));
+  return updated;
+}
+
 export async function recordCustomerSale(shopId, {
   customerId,
   name,
   email,
   phone,
   orderTotal,
+  pointsRedeemed = 0,
 }) {
   const total = Number(orderTotal) || 0;
   const rewardsConfig = await getRewardsConfig(shopId);
   const pointsEarned = computePointsForAmount(total, rewardsConfig);
-  if (total <= 0) return { customer: null, pointsEarned: 0 };
+  const redeemed = Math.max(0, Number(pointsRedeemed) || 0);
+  if (total <= 0 && redeemed <= 0) return { customer: null, pointsEarned: 0 };
 
   const trimmedName = String(name || '').trim();
   const trimmedPhone = String(phone || '').trim();
@@ -208,24 +253,26 @@ export async function recordCustomerSale(shopId, {
       return { customer: null, pointsEarned: 0 };
     }
     const newId = uuidv4();
+    const initialPoints = Math.max(0, pointsEarned - redeemed);
     customer = customerItem(shopId, {
       customerId: newId,
       name: trimmedName,
       email: trimmedEmail,
       phone: trimmedPhone,
-      points: pointsEarned,
+      points: initialPoints,
       totalSpent: total,
       orderCount: 1,
       createdAt: now,
     });
   } else {
+    const netPoints = Math.max(0, (Number(customer.points) || 0) + pointsEarned - redeemed);
     customer = {
       ...customer,
       name: trimmedName || customer.name,
       email: trimmedEmail || customer.email,
       phone: trimmedPhone || customer.phone,
       phoneNorm: normalizePhone(trimmedPhone || customer.phone),
-      points: (Number(customer.points) || 0) + pointsEarned,
+      points: netPoints,
       totalSpent: (Number(customer.totalSpent) || 0) + total,
       orderCount: (Number(customer.orderCount) || 0) + 1,
       updatedAt: now,

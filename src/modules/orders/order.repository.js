@@ -11,6 +11,7 @@ import { getStockQty, getTaxPercent, getUnitPrice } from '../../utils/product.js
 import { computeLinePricing, findActiveOfferForProduct, findActiveOrderUnderOffer, computeOrderUnderDiscount, getStockUnitsForLine } from '../../utils/offer.js';
 import { getProduct } from '../inventory/inventory.repository.js';
 import { listOffers } from '../offers/offer.repository.js';
+import { createVoucher, VOUCHER_TYPE } from '../gift-vouchers/gift-voucher.repository.js';
 
 export const ORDER_STATUS = {
   PENDING: 'pending',
@@ -23,6 +24,7 @@ export const ORDER_TYPE = {
   SALE: 'sale',
   RETURN: 'return',
   REFUND: 'refund',
+  CREDIT_NOTE: 'credit_note',
 };
 
 function toDateKey(iso) {
@@ -255,6 +257,10 @@ export async function createOnsiteOrder({
   changeAmount = null,
   shiftId = null,
   pointsEarned = 0,
+  pointsRedeemed = 0,
+  pointsDiscount = 0,
+  voucherCode = null,
+  voucherDiscount = 0,
   receiptTemplateId = null,
   receiptTemplateName = null,
   fulfillImmediately = true,
@@ -262,6 +268,10 @@ export async function createOnsiteOrder({
   const orderId = uuidv4();
   const now = new Date().toISOString();
   const { orderItems, total, orderDiscount, orderOfferType } = await buildOrderItems(shopId, items);
+
+  const ptsDisc = Math.max(0, Number(pointsDiscount) || 0);
+  const vchDisc = Math.max(0, Number(voucherDiscount) || 0);
+  const finalTotal = Math.max(0, total - ptsDisc - vchDisc);
 
   const status = fulfillImmediately ? ORDER_STATUS.FULFILLED : ORDER_STATUS.PENDING;
   const shopOrder = {
@@ -282,11 +292,16 @@ export async function createOnsiteOrder({
     changeAmount: changeAmount != null ? Number(changeAmount) : null,
     shiftId: shiftId || null,
     pointsEarned: Number(pointsEarned) || 0,
+    pointsRedeemed: Math.max(0, Number(pointsRedeemed) || 0),
+    pointsDiscount: ptsDisc,
+    voucherCode: voucherCode || null,
+    voucherDiscount: vchDisc,
     receiptTemplateId: receiptTemplateId || null,
     receiptTemplateName: receiptTemplateName || null,
     createdBy,
     items: orderItems,
-    total,
+    grossTotal: total,
+    total: finalTotal,
     orderDiscount: orderDiscount || 0,
     orderOfferType: orderOfferType || null,
     status,
@@ -604,8 +619,8 @@ export async function createOrderAdjustment(shopId, parentOrderId, { type, items
     throw new Error('Only fulfilled orders can be returned or refunded');
   }
 
-  if (type !== ORDER_TYPE.RETURN && type !== ORDER_TYPE.REFUND) {
-    throw new Error('Adjustment type must be return or refund');
+  if (type !== ORDER_TYPE.RETURN && type !== ORDER_TYPE.REFUND && type !== ORDER_TYPE.CREDIT_NOTE) {
+    throw new Error('Adjustment type must be return, refund, or credit_note');
   }
 
   const cleaned = (items || []).filter((i) => Number(i.quantity) > 0);
@@ -660,7 +675,7 @@ export async function createOrderAdjustment(shopId, parentOrderId, { type, items
       lineTotal,
     });
 
-    if (type === ORDER_TYPE.RETURN) {
+    if (type === ORDER_TYPE.RETURN || type === ORDER_TYPE.CREDIT_NOTE) {
       stockRestoreItems.push({
         productId: parentLine.productId,
         physicalQuantity: (parentLine.physicalQuantity ?? parentLine.quantity) * ratio,
@@ -676,6 +691,24 @@ export async function createOrderAdjustment(shopId, parentOrderId, { type, items
   const adjustmentId = uuidv4();
   const now = new Date().toISOString();
 
+  let creditNote = null;
+  if (type === ORDER_TYPE.CREDIT_NOTE) {
+    creditNote = await createVoucher(
+      shopId,
+      {
+        type: VOUCHER_TYPE.CREDIT_NOTE,
+        initialAmount: adjustmentTotal,
+        customerName: parent.customerName || 'Customer',
+        customerPhone: parent.customerPhone || '',
+        customerEmail: parent.customerEmail || '',
+        customerId: parent.customerId || null,
+        sourceOrderId: parentOrderId,
+        notes: `Store credit note for return on Order #${parentOrderId.slice(0, 8)}`,
+      },
+      { userId: actorUserId, name: 'Order Adjustment' }
+    );
+  }
+
   const adjustmentOrder = {
     PK: `SHOP#${shopId}`,
     SK: `ORDER#${adjustmentId}`,
@@ -683,6 +716,8 @@ export async function createOrderAdjustment(shopId, parentOrderId, { type, items
     orderId: adjustmentId,
     parentOrderId,
     orderType: type,
+    creditNoteCode: creditNote?.code || null,
+    creditNoteId: creditNote?.voucherId || null,
     shopId,
     studentId: parent.studentId || null,
     source: parent.source,
@@ -720,7 +755,7 @@ export async function createOrderAdjustment(shopId, parentOrderId, { type, items
     },
   ];
 
-  if (type === ORDER_TYPE.RETURN && stockRestoreItems.length > 0) {
+  if ((type === ORDER_TYPE.RETURN || type === ORDER_TYPE.CREDIT_NOTE) && stockRestoreItems.length > 0) {
     transactItems.push(...stockRestoreUpdates(shopId, stockRestoreItems, now));
   }
 
@@ -744,6 +779,7 @@ export async function createOrderAdjustment(shopId, parentOrderId, { type, items
     parentOrderId,
     adjustmentTotal,
     adjustmentType: type,
+    creditNote,
     customerId: parent.customerId || null,
     pointsEarned: parent.pointsEarned || 0,
   };

@@ -61,7 +61,13 @@ const updateSchema = z.object({
   params: z.object({ shopId: z.string().uuid(), offerId: z.string().uuid() }),
 });
 
-const offerAuth = [
+const offerReadAuth = [
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF),
+  scopeToShop('shopId'),
+];
+
+const offerManageAuth = [
   authenticate,
   authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER),
   scopeToShop('shopId'),
@@ -69,7 +75,7 @@ const offerAuth = [
 
 const router = Router({ mergeParams: true });
 
-router.get('/', offerAuth, async (req, res, next) => {
+router.get('/', offerReadAuth, async (req, res, next) => {
   try {
     const offers = await listOffers(req.params.shopId);
     res.json({ success: true, data: offers });
@@ -78,7 +84,7 @@ router.get('/', offerAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:offerId', offerAuth, async (req, res, next) => {
+router.get('/:offerId', offerReadAuth, async (req, res, next) => {
   try {
     const offer = await getOffer(req.params.shopId, req.params.offerId);
     if (!offer) throw new AppError('Offer not found', 404, 'NOT_FOUND');
@@ -88,7 +94,7 @@ router.get('/:offerId', offerAuth, async (req, res, next) => {
   }
 });
 
-router.post('/', [...offerAuth, validate(createSchema)], async (req, res, next) => {
+router.post('/', [...offerManageAuth, validate(createSchema)], async (req, res, next) => {
   try {
     const offer = await createOffer(req.params.shopId, req.body, req.user.userId);
     res.status(201).json({ success: true, data: offer });
@@ -97,7 +103,7 @@ router.post('/', [...offerAuth, validate(createSchema)], async (req, res, next) 
   }
 });
 
-router.put('/:offerId', [...offerAuth, validate(updateSchema)], async (req, res, next) => {
+router.put('/:offerId', [...offerManageAuth, validate(updateSchema)], async (req, res, next) => {
   try {
     const existing = await getOffer(req.params.shopId, req.params.offerId);
     if (!existing) throw new AppError('Offer not found', 404, 'NOT_FOUND');
@@ -113,7 +119,7 @@ router.put('/:offerId', [...offerAuth, validate(updateSchema)], async (req, res,
   }
 });
 
-router.delete('/:offerId', offerAuth, async (req, res, next) => {
+router.delete('/:offerId', offerManageAuth, async (req, res, next) => {
   try {
     const existing = await getOffer(req.params.shopId, req.params.offerId);
     if (!existing) throw new AppError('Offer not found', 404, 'NOT_FOUND');

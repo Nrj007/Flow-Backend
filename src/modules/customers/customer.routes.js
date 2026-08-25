@@ -7,6 +7,7 @@ import { scopeToShop } from '../../middleware/scopeToShop.js';
 import { validate } from '../../middleware/validate.js';
 import { AppError } from '../../middleware/errorHandler.js';
 import {
+  adjustCustomerPoints,
   createCustomer,
   getCustomer,
   listCustomers,
@@ -32,6 +33,14 @@ const updateSchema = z.object({
     name: z.string().min(1).optional(),
     email: z.union([z.string().email(), z.literal('')]).optional(),
     phone: z.string().min(5).optional(),
+  }),
+  params: z.object({ shopId: z.string().uuid(), customerId: z.string().uuid() }),
+});
+
+const adjustPointsSchema = z.object({
+  body: z.object({
+    delta: z.number(),
+    reason: z.string().optional(),
   }),
   params: z.object({ shopId: z.string().uuid(), customerId: z.string().uuid() }),
 });
@@ -86,6 +95,25 @@ router.patch(
         req.params.shopId,
         req.params.customerId,
         req.body
+      );
+      if (!customer) throw new AppError('Customer not found', 404, 'NOT_FOUND');
+      res.json({ success: true, data: customer });
+    } catch (err) {
+      mapCustomerError(err, next);
+    }
+  }
+);
+
+router.post(
+  '/:customerId/points',
+  [...customerAuth, validate(adjustPointsSchema)],
+  async (req, res, next) => {
+    try {
+      const customer = await adjustCustomerPoints(
+        req.params.shopId,
+        req.params.customerId,
+        req.body.delta,
+        req.body.reason
       );
       if (!customer) throw new AppError('Customer not found', 404, 'NOT_FOUND');
       res.json({ success: true, data: customer });
