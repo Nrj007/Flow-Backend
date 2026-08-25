@@ -34,17 +34,28 @@ export async function createVoucher(shopId, data, actorUser = {}) {
   const now = new Date().toISOString();
   const type = data.type === VOUCHER_TYPE.CREDIT_NOTE ? VOUCHER_TYPE.CREDIT_NOTE : VOUCHER_TYPE.GIFT_CARD;
   const prefix = type === VOUCHER_TYPE.CREDIT_NOTE ? 'CN' : 'GV';
-  const code = normalizeVoucherCode(data.code) || generateVoucherCode(prefix);
+  
+  let code = normalizeVoucherCode(data.code);
+  if (!code) {
+    let attempts = 0;
+    do {
+      code = generateVoucherCode(prefix);
+      const exists = await getVoucherByCode(shopId, code);
+      if (!exists) break;
+      attempts++;
+    } while (attempts < 20);
+  } else {
+    // Check if code already exists in this shop (active, redeemed, or expired)
+    const existing = await getVoucherByCode(shopId, code);
+    if (existing) {
+      throw new Error(`Voucher code "${code}" already exists in system (${existing.status}). A redeemed or used voucher code cannot be generated or used again.`);
+    }
+  }
+
   const initialAmount = Math.max(0, Number(data.initialAmount ?? data.amount) || 0);
 
   if (initialAmount <= 0) {
     throw new Error('Voucher initial amount must be greater than zero');
-  }
-
-  // Check if code already exists in this shop
-  const existing = await getVoucherByCode(shopId, code);
-  if (existing) {
-    throw new Error(`Voucher code "${code}" is already in use`);
   }
 
   const voucher = {
@@ -175,8 +186,12 @@ export async function redeemVoucher(shopId, code, redeemAmount, { orderId = null
     throw new Error(`Voucher code "${code}" not found`);
   }
 
+  if (voucher.status === VOUCHER_STATUS.REDEEMED || (Number(voucher.balance) || 0) <= 0) {
+    throw new Error('This voucher has already been fully redeemed and cannot be used again.');
+  }
+
   if (voucher.status !== VOUCHER_STATUS.ACTIVE) {
-    throw new Error(`Voucher is ${voucher.status}`);
+    throw new Error(`Voucher cannot be used (status: ${voucher.status})`);
   }
 
   if (voucher.expiryDate && new Date(voucher.expiryDate) < new Date()) {
