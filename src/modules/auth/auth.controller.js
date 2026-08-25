@@ -45,6 +45,7 @@ function buildTokenPayload(user) {
     email: user.email,
     role: user.role,
     shopId: user.shopId ?? null,
+    shopName: user.shopName ?? null,
     name: user.name,
     permissions,
   };
@@ -57,6 +58,7 @@ function toPublicUser(user) {
     name: user.name,
     role: user.role,
     shopId: user.shopId ?? null,
+    shopName: user.shopName ?? null,
     mustResetPassword: user.mustResetPassword ?? false,
     permissions: user.permissions,
   };
@@ -215,14 +217,7 @@ export async function meHandler(req, res, next) {
     const user = await enrichUserRecord(rawUser);
     res.json({
       success: true,
-      data: {
-        userId: user.userId,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        shopId: user.shopId ?? null,
-        permissions: user.permissions,
-      },
+      data: toPublicUser(user),
     });
   } catch (err) {
     next(err);

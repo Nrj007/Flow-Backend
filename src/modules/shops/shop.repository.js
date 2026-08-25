@@ -1,5 +1,5 @@
 import {
-  BatchWriteCommand,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -236,22 +236,18 @@ async function queryAllShopItems(shopId) {
 }
 
 async function batchDeleteKeys(keys) {
-  for (let i = 0; i < keys.length; i += 25) {
-    const chunk = keys.slice(i, i + 25);
-    let requestItems = {
-      [TABLE_NAME]: chunk.map((Key) => ({ DeleteRequest: { Key } })),
-    };
-
-    // Retry unprocessed items
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const result = await docClient.send(
-        new BatchWriteCommand({ RequestItems: requestItems })
-      );
-      const unprocessed = result.UnprocessedItems?.[TABLE_NAME];
-      if (!unprocessed?.length) break;
-      requestItems = { [TABLE_NAME]: unprocessed };
-      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
-    }
+  const chunkSize = 15;
+  for (let i = 0; i < keys.length; i += chunkSize) {
+    const chunk = keys.slice(i, i + chunkSize);
+    await Promise.all(
+      chunk.map((Key) =>
+        docClient
+          .send(new DeleteCommand({ TableName: TABLE_NAME, Key }))
+          .catch((err) => {
+            console.warn('Failed to delete key:', Key, err.message);
+          })
+      )
+    );
   }
 }
 

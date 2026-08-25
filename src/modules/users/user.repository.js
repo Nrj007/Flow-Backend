@@ -14,18 +14,33 @@ export async function enrichUserRecord(user) {
   if (!user) return null;
 
   let permissions = user.permissions;
+  let shopName = user.shopName || null;
 
-  if (user.shopId && [ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF].includes(user.role)) {
-    const shopUser = await getShopUser(user.shopId, user.userId);
-    if (shopUser?.permissions) {
-      permissions = shopUser.permissions;
+  if (user.shopId) {
+    try {
+      const shopRes = await docClient.send(
+        new GetCommand({
+          TableName: TABLE_NAME,
+          Key: { PK: `SHOP#${user.shopId}`, SK: 'METADATA' },
+        })
+      );
+      if (shopRes.Item?.name) {
+        shopName = shopRes.Item.name;
+      }
+    } catch {}
+
+    if ([ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF].includes(user.role)) {
+      const shopUser = await getShopUser(user.shopId, user.userId);
+      if (shopUser?.permissions) {
+        permissions = shopUser.permissions;
+      }
     }
   }
 
   const effectivePermissions = sanitizePermissions(user.role, permissions);
 
   const { passwordHash, refreshToken, ...safeUser } = user;
-  return { ...safeUser, permissions: effectivePermissions };
+  return { ...safeUser, permissions: effectivePermissions, shopName };
 }
 
 export async function getUserByEmail(email) {
@@ -211,7 +226,8 @@ export async function updateUserPermissions(userId, shopId, permissions) {
       Update: {
         TableName: TABLE_NAME,
         Key: { PK: `USER#${userId}`, SK: 'METADATA' },
-        UpdateExpression: 'SET permissions = :perms, updatedAt = :now',
+        UpdateExpression: 'SET #permissions = :perms, updatedAt = :now',
+        ExpressionAttributeNames: { '#permissions': 'permissions' },
         ExpressionAttributeValues: {
           ':perms': effectivePermissions,
           ':now': now,
@@ -225,7 +241,8 @@ export async function updateUserPermissions(userId, shopId, permissions) {
       Update: {
         TableName: TABLE_NAME,
         Key: { PK: `SHOP#${shopId}`, SK: `USER#${userId}` },
-        UpdateExpression: 'SET permissions = :perms, updatedAt = :now',
+        UpdateExpression: 'SET #permissions = :perms, updatedAt = :now',
+        ExpressionAttributeNames: { '#permissions': 'permissions' },
         ExpressionAttributeValues: {
           ':perms': effectivePermissions,
           ':now': now,
@@ -270,7 +287,8 @@ export async function updateShopUser(userId, { name, email, password, permission
 
   if (permissions !== undefined) {
     const effectivePermissions = sanitizePermissions(user.role, permissions);
-    updates.push('permissions = :perms');
+    updates.push('#permissions = :perms');
+    names['#permissions'] = 'permissions';
     values[':perms'] = effectivePermissions;
   }
 
@@ -308,7 +326,8 @@ export async function updateShopUser(userId, { name, email, password, permission
       shopValues[':email'] = normalizedEmail;
     }
     if (permissions !== undefined) {
-      shopUpdates.push('permissions = :perms');
+      shopUpdates.push('#permissions = :perms');
+      shopNames['#permissions'] = 'permissions';
       shopValues[':perms'] = values[':perms'];
     }
     if (passwordHash) {

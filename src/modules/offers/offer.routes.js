@@ -69,7 +69,7 @@ const offerReadAuth = [
 
 const offerManageAuth = [
   authenticate,
-  authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER),
+  authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF),
   scopeToShop('shopId'),
 ];
 
