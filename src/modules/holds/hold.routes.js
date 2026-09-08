@@ -31,8 +31,11 @@ const createSchema = z.object({
       )
       .min(1),
     ticket: z.string().optional(),
-    payment: z.enum(['cash', 'upi']).optional(),
+    payment: z.enum(['cash', 'upi', 'card', 'due', 'other']).optional(),
     estimatedTotal: z.number().optional(),
+    pointsRedeemed: z.number().nonnegative().optional(),
+    voucherCode: z.string().optional().nullable(),
+    ebillHtml: z.string().optional().nullable(),
     customer: z
       .object({
         customerId: z.string().uuid().optional().nullable(),

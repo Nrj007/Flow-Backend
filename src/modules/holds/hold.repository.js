@@ -5,6 +5,7 @@ import {
   QueryCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
+import { normalizePaymentMethod } from '../../constants/payments.js';
 import { docClient, TABLE_NAME } from '../../config/db.js';
 
 export async function listHolds(shopId) {
@@ -41,6 +42,9 @@ export async function createHold(shopId, {
   customer = null,
   estimatedTotal = 0,
   createdBy,
+  ebillHtml = null,
+  pointsRedeemed = 0,
+  voucherCode = null,
 }) {
   const holdId = uuidv4();
   const now = new Date().toISOString();
@@ -63,16 +67,20 @@ export async function createHold(shopId, {
     shopId,
     ticket: ticket || String(Math.floor(8000 + Math.random() * 1999)),
     items,
-    payment: payment === 'cash' ? 'cash' : 'upi',
+    payment: normalizePaymentMethod(payment),
     customer: customer
       ? {
           customerId: customer.customerId || null,
           name: customer.name || '',
           email: customer.email || '',
           phone: customer.phone || '',
+          points: customer.points ?? null,
         }
       : null,
     estimatedTotal: Number(estimatedTotal) || 0,
+    pointsRedeemed: Math.max(0, Number(pointsRedeemed) || 0),
+    voucherCode: voucherCode || null,
+    ebillHtml: ebillHtml || null,
     createdBy,
     createdAt: now,
     savedAt: now,

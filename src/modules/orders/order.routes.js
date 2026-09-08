@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { PERMISSIONS } from '../../constants/permissions.js';
+import { normalizePaymentMethod, ORDER_SUB_TYPES, PAYMENT_STATUS } from '../../constants/payments.js';
 import { ROLES } from '../../constants/roles.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
@@ -59,7 +60,8 @@ const onsiteOrderSchema = z.object({
     customerId: z.string().uuid().optional().nullable(),
     customerEmail: z.string().optional().nullable(),
     customerPhone: z.string().optional().nullable(),
-    paymentMethod: z.enum(['cash', 'upi']).optional(),
+    paymentMethod: z.enum(['cash', 'upi', 'card', 'due', 'other']).optional(),
+    paymentStatus: z.enum(['paid', 'due']).optional(),
     cashReceived: z.number().optional().nullable(),
     changeAmount: z.number().optional().nullable(),
     pointsRedeemed: z.number().nonnegative().optional(),
@@ -70,6 +72,9 @@ const onsiteOrderSchema = z.object({
     receiptTemplateName: z.string().optional().nullable(),
     receiptHtml: z.string().optional().nullable(),
     fulfillImmediately: z.boolean().optional(),
+    orderSubType: z.enum(['sale', 'kot']).optional(),
+    billingAction: z.enum(['save', 'save_print', 'ebill', 'kot', 'kot_print', 'settle']).optional(),
+    isEbill: z.boolean().optional(),
   }),
 });
 
@@ -218,11 +223,17 @@ shopRouter.post(
   [...shopOrderManageAuth, validate(onsiteOrderSchema)],
   async (req, res, next) => {
     try {
-      const paymentMethod = req.body.paymentMethod === 'cash' ? 'cash' : 'upi';
+      const paymentMethod = normalizePaymentMethod(req.body.paymentMethod);
       const customerName = req.body.customerName || 'Customer';
       const currentShift = paymentMethod === 'cash'
         ? await getCurrentShift(req.params.shopId)
         : null;
+      const orderSubType = req.body.orderSubType === ORDER_SUB_TYPES.KOT
+        ? ORDER_SUB_TYPES.KOT
+        : ORDER_SUB_TYPES.SALE;
+      const fulfillImmediately = orderSubType === ORDER_SUB_TYPES.KOT
+        ? false
+        : (req.body.fulfillImmediately ?? true);
 
       let pointsEarned = 0;
       let linkedCustomerId = req.body.customerId || null;
@@ -236,6 +247,7 @@ shopRouter.post(
         customerEmail: req.body.customerEmail,
         customerPhone: req.body.customerPhone,
         paymentMethod,
+        paymentStatus: req.body.paymentStatus,
         cashReceived: req.body.cashReceived != null ? Number(req.body.cashReceived) : null,
         changeAmount: req.body.changeAmount != null ? Number(req.body.changeAmount) : null,
         shiftId: currentShift?.shiftId || null,
@@ -246,7 +258,10 @@ shopRouter.post(
         voucherDiscount: req.body.voucherDiscount || 0,
         receiptTemplateId: req.body.receiptTemplateId || null,
         receiptTemplateName: req.body.receiptTemplateName || null,
-        fulfillImmediately: req.body.fulfillImmediately ?? true,
+        fulfillImmediately,
+        orderSubType,
+        billingAction: req.body.billingAction || null,
+        isEbill: req.body.isEbill ?? false,
       });
 
       // If voucher code was used and discount > 0, redeem from voucher balance
@@ -262,7 +277,7 @@ shopRouter.post(
         }
       }
 
-      if (req.body.fulfillImmediately ?? true) {
+      if (fulfillImmediately) {
         const saleResult = await recordCustomerSale(req.params.shopId, {
           customerId: linkedCustomerId,
           name: req.body.customerName,

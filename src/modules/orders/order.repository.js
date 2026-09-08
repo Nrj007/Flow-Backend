@@ -6,6 +6,7 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
+import { normalizePaymentMethod, PAYMENT_STATUS, ORDER_SUB_TYPES } from '../../constants/payments.js';
 import { docClient, TABLE_NAME } from '../../config/db.js';
 import { getStockQty, getTaxPercent, getUnitPrice } from '../../utils/product.js';
 import { computeLinePricing, findActiveOfferForProduct, findActiveOrderUnderOffer, computeOrderUnderDiscount, getStockUnitsForLine } from '../../utils/offer.js';
@@ -253,6 +254,7 @@ export async function createOnsiteOrder({
   customerEmail = null,
   customerPhone = null,
   paymentMethod = 'upi',
+  paymentStatus = null,
   cashReceived = null,
   changeAmount = null,
   shiftId = null,
@@ -264,6 +266,9 @@ export async function createOnsiteOrder({
   receiptTemplateId = null,
   receiptTemplateName = null,
   fulfillImmediately = true,
+  orderSubType = ORDER_SUB_TYPES.SALE,
+  billingAction = null,
+  isEbill = false,
 }) {
   const orderId = uuidv4();
   const now = new Date().toISOString();
@@ -273,7 +278,13 @@ export async function createOnsiteOrder({
   const vchDisc = Math.max(0, Number(voucherDiscount) || 0);
   const finalTotal = Math.max(0, total - ptsDisc - vchDisc);
 
-  const status = fulfillImmediately ? ORDER_STATUS.FULFILLED : ORDER_STATUS.PENDING;
+  const normalizedPayment = normalizePaymentMethod(paymentMethod);
+  const resolvedPaymentStatus =
+    paymentStatus || (normalizedPayment === 'due' ? PAYMENT_STATUS.DUE : PAYMENT_STATUS.PAID);
+  const isKot = orderSubType === ORDER_SUB_TYPES.KOT;
+  const shouldFulfill = isKot ? false : fulfillImmediately;
+
+  const status = shouldFulfill ? ORDER_STATUS.FULFILLED : ORDER_STATUS.PENDING;
   const shopOrder = {
     PK: `SHOP#${shopId}`,
     SK: `ORDER#${orderId}`,
@@ -283,11 +294,15 @@ export async function createOnsiteOrder({
     shopId,
     source: 'onsite',
     orderType: ORDER_TYPE.SALE,
+    orderSubType: isKot ? ORDER_SUB_TYPES.KOT : ORDER_SUB_TYPES.SALE,
+    billingAction: billingAction || null,
+    isEbill: Boolean(isEbill),
     customerName,
     customerId: customerId || null,
     customerEmail: customerEmail || null,
     customerPhone: customerPhone || null,
-    paymentMethod: paymentMethod === 'cash' ? 'cash' : 'upi',
+    paymentMethod: normalizedPayment,
+    paymentStatus: resolvedPaymentStatus,
     cashReceived: cashReceived != null ? Number(cashReceived) : null,
     changeAmount: changeAmount != null ? Number(changeAmount) : null,
     shiftId: shiftId || null,
@@ -305,15 +320,15 @@ export async function createOnsiteOrder({
     orderDiscount: orderDiscount || 0,
     orderOfferType: orderOfferType || null,
     status,
-    stockDeducted: fulfillImmediately,
-    incomeRecorded: fulfillImmediately,
+    stockDeducted: shouldFulfill,
+    incomeRecorded: shouldFulfill,
     createdAt: now,
     updatedAt: now,
   };
 
   const transactItems = [{ Put: { TableName: TABLE_NAME, Item: shopOrder } }];
 
-  if (fulfillImmediately) {
+  if (shouldFulfill) {
     transactItems.push(...stockDeductUpdates(shopId, orderItems, now));
     transactItems.push(incomeTxnItem(shopId, shopOrder, createdBy, now));
   }
