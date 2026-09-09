@@ -1,9 +1,11 @@
 import express from 'express';
 import { ROLES } from '../../constants/roles.js';
+import { AppError } from '../../middleware/errorHandler.js';
 import {
   listDepartments,
   getDepartment,
   createDepartment,
+  deleteDepartment,
   topUpDepartmentQuota,
   chargeDepartmentQuota,
   listDepartmentTransactions,
@@ -33,6 +35,9 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
+    if (!String(req.body?.name || '').trim()) {
+      throw new AppError('Department name is required', 400, 'DEPT_ERROR');
+    }
     const department = await createDepartment(req.params.shopId, {
       ...req.body,
       createdBy: req.user?.userId,
@@ -60,6 +65,21 @@ router.get('/:deptId', async (req, res, next) => {
     }
     res.json({ success: true, data: department });
   } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/:deptId', async (req, res, next) => {
+  try {
+    const department = await deleteDepartment(req.params.shopId, req.params.deptId, {
+      actorId: req.user?.userId,
+      actorName: req.user?.name,
+    });
+    res.json({ success: true, data: department });
+  } catch (err) {
+    if (err.message === 'Department not found') {
+      return next(new AppError(err.message, 404, 'NOT_FOUND'));
+    }
     next(err);
   }
 });

@@ -20,8 +20,8 @@ const querySchema = z.object({
   }),
 });
 
-const readAuth = [authenticate, authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER), requirePermission(PERMISSIONS.REPORTS_VIEW), scopeToShop('shopId')];
-const exportAuth = [authenticate, authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER), requirePermission(PERMISSIONS.REPORTS_EXPORT), scopeToShop('shopId')];
+const readAuth = [authenticate, authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF), requirePermission(PERMISSIONS.REPORTS_VIEW), scopeToShop('shopId')];
+const exportAuth = [authenticate, authorize(ROLES.SUPER_ADMIN, ROLES.SHOP_MANAGER, ROLES.SHOP_STAFF), requirePermission(PERMISSIONS.REPORTS_EXPORT), scopeToShop('shopId')];
 const router = Router({ mergeParams: true });
 
 router.get('/sales', [...readAuth, validate(querySchema)], async (req, res, next) => {

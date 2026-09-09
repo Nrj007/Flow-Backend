@@ -263,6 +263,11 @@ shopRouter.post(
         if (!dept) {
           throw new AppError('Department not found', 404, 'NOT_FOUND');
         }
+        req.body.deptName = req.body.deptName || dept.name;
+        const remaining = Number(dept.remainingBalance) || 0;
+        if (remaining <= 0) {
+          throw new AppError('This department has no remaining quota', 400, 'ORDER_ERROR');
+        }
       }
 
       let pointsEarned = 0;
