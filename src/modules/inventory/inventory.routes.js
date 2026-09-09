@@ -12,7 +12,9 @@ import {
   getStockQty,
   getUnitPrice,
   isProductActive,
+  getExpiryStatus,
 } from '../../utils/product.js';
+import { generateCSV } from '../../utils/csv.js';
 import { isOfferActive } from '../../utils/offer.js';
 import { listOffers } from '../offers/offer.repository.js';
 import { createAuditEntry, AUDIT_ACTIONS } from '../audit/audit.repository.js';
@@ -22,6 +24,7 @@ import {
   getProduct,
   listProducts,
   updateProduct,
+  bulkCreateOrUpdateProducts,
 } from './inventory.repository.js';
 
 const supplierSchema = z
@@ -38,6 +41,9 @@ const productObjectSchema = z.object({
   description: z.string().optional().nullable(),
   sku: z.string().optional().nullable(),
   barcode: z.string().optional().nullable(),
+  batchNumber: z.string().optional().nullable(),
+  lotNumber: z.string().optional().nullable(),
+  mfgDate: z.string().optional().nullable(),
   unitPrice: z.number().positive().optional(),
   price: z.number().positive().optional(), // legacy alias
   costPrice: z.number().min(0),
@@ -76,6 +82,13 @@ const createSchema = z.object({ body: productCreateBodySchema });
 const updateSchema = z.object({
   body: productObjectSchema.partial(),
   params: z.object({ shopId: z.string().uuid(), productId: z.string().uuid() }),
+});
+
+const bulkImportSchema = z.object({
+  body: z.object({
+    items: z.array(z.record(z.any())).min(1, 'At least 1 product row is required'),
+    duplicateStrategy: z.enum(['skip', 'update']).default('skip'),
+  }),
 });
 
 const inventoryReadAuth = [
@@ -182,9 +195,174 @@ async function deleteHandler(req, res, next) {
   }
 }
 
+async function bulkImportHandler(req, res, next) {
+  try {
+    const { items, duplicateStrategy } = req.body;
+    const shopId = req.params.shopId;
+
+    // Intra-payload duplicate SKU check
+    const seenSkus = new Set();
+    const sanitizedItems = [];
+    const internalErrors = [];
+
+    items.forEach((item, index) => {
+      const rowNum = item._rowIndex || index + 1;
+      const name = String(item.name || '').trim();
+      const sku = item.sku ? String(item.sku).trim() : null;
+      const unitPrice = Number(item.unitPrice ?? item.price);
+      const costPrice = Number(item.costPrice ?? 0);
+      const quantityInStock = Number(item.quantityInStock ?? item.quantity ?? item.openingStock ?? 0);
+
+      if (!name) {
+        internalErrors.push({ row: rowNum, error: 'Product name is required', sku });
+        return;
+      }
+      if (isNaN(unitPrice) || unitPrice <= 0) {
+        internalErrors.push({ row: rowNum, error: 'Valid selling price (unitPrice > 0) is required', sku, name });
+        return;
+      }
+      if (isNaN(quantityInStock) || quantityInStock < 0) {
+        internalErrors.push({ row: rowNum, error: 'Valid stock quantity (>= 0) is required', sku, name });
+        return;
+      }
+
+      if (sku) {
+        const lowerSku = sku.toLowerCase();
+        if (seenSkus.has(lowerSku) && duplicateStrategy === 'skip') {
+          internalErrors.push({ row: rowNum, error: `Duplicate SKU "${sku}" found within uploaded CSV`, sku, name });
+          return;
+        }
+        seenSkus.add(lowerSku);
+      }
+
+      sanitizedItems.push({
+        _rowIndex: rowNum,
+        name,
+        category: item.category || 'general',
+        sku,
+        barcode: item.barcode ? String(item.barcode).trim() : sku,
+        batchNumber: item.batchNumber || item.lotNumber || null,
+        lotNumber: item.batchNumber || item.lotNumber || null,
+        mfgDate: item.mfgDate || null,
+        expiryDate: item.expiryDate || null,
+        unitPrice,
+        price: unitPrice,
+        costPrice: isNaN(costPrice) ? 0 : costPrice,
+        quantityInStock,
+        quantity: quantityInStock,
+        unit: item.unit || 'piece',
+        reorderThreshold: Number(item.reorderThreshold ?? 5),
+        status: ['active', 'inactive', 'discontinued'].includes(item.status) ? item.status : 'active',
+        taxPercent: Number(item.taxPercent ?? 0),
+        supplier: item.supplierName ? { name: item.supplierName, contact: item.supplierContact || '' } : item.supplier,
+        description: item.description || '',
+        availableOnline: item.availableOnline !== false && item.availableOnline !== 'false',
+      });
+    });
+
+    const result = await bulkCreateOrUpdateProducts(shopId, sanitizedItems, {
+      duplicateStrategy,
+      actorUserId: req.user.userId,
+    });
+
+    result.errors.push(...internalErrors);
+    result.errorCount = result.errors.length;
+
+    await createAuditEntry({
+      shopId,
+      action: AUDIT_ACTIONS.PRODUCT_CREATED,
+      entityType: 'INVENTORY_IMPORT',
+      entityId: shopId,
+      actorId: req.user.userId,
+      actorName: req.user.name,
+      meta: {
+        total: items.length,
+        created: result.createdCount,
+        updated: result.updatedCount,
+        skipped: result.skippedCount,
+        errors: result.errorCount,
+        strategy: duplicateStrategy,
+      },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        total: items.length,
+        importedCount: result.createdCount,
+        updatedCount: result.updatedCount,
+        skippedCount: result.skippedCount,
+        errorCount: result.errorCount,
+        errors: result.errors,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function exportHandler(req, res, next) {
+  try {
+    const products = await listProducts(req.params.shopId);
+    const headers = [
+      { key: 'name', label: 'Product Name' },
+      { key: 'category', label: 'Category' },
+      { key: 'sku', label: 'SKU' },
+      { key: 'barcode', label: 'Barcode' },
+      { key: 'batchNumber', label: 'Batch / Lot No' },
+      { key: 'mfgDate', label: 'Mfg Date' },
+      { key: 'expiryDate', label: 'Expiry Date' },
+      { key: 'expiryStatus', label: 'Expiry Status' },
+      { key: 'unitPrice', label: 'Selling Price' },
+      { key: 'costPrice', label: 'Cost Price' },
+      { key: 'taxPercent', label: 'Tax Percent' },
+      { key: 'quantityInStock', label: 'Stock Qty' },
+      { key: 'unit', label: 'Unit' },
+      { key: 'reorderThreshold', label: 'Reorder Level' },
+      { key: 'status', label: 'Status' },
+      { key: 'supplierName', label: 'Supplier Name' },
+      { key: 'supplierContact', label: 'Supplier Contact' },
+      { key: 'availableOnline', label: 'Available Online' },
+    ];
+
+    const rows = products.map((p) => {
+      const exp = getExpiryStatus(p);
+      return {
+        name: p.name || '',
+        category: p.category || '',
+        sku: p.sku || '',
+        barcode: p.barcode || '',
+        batchNumber: p.batchNumber || p.lotNumber || '',
+        mfgDate: p.mfgDate || '',
+        expiryDate: p.expiryDate || '',
+        expiryStatus: exp.status,
+        unitPrice: getUnitPrice(p),
+        costPrice: p.costPrice ?? 0,
+        taxPercent: p.taxPercent ?? 0,
+        quantityInStock: getStockQty(p),
+        unit: p.unit || 'piece',
+        reorderThreshold: p.reorderThreshold ?? 5,
+        status: p.status || 'active',
+        supplierName: p.supplier?.name || '',
+        supplierContact: p.supplier?.contact || '',
+        availableOnline: p.availableOnline !== false ? 'Yes' : 'No',
+      };
+    });
+
+    const csvData = generateCSV(headers, rows);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=inventory_${req.params.shopId}.csv`);
+    res.send(csvData);
+  } catch (err) {
+    next(err);
+  }
+}
+
 const router = Router({ mergeParams: true });
 
 router.get('/', inventoryReadAuth, listHandler);
+router.get('/export', inventoryReadAuth, exportHandler);
+router.post('/bulk-import', [...inventoryManageAuth, validate(bulkImportSchema)], bulkImportHandler);
 router.get('/:productId', inventoryReadAuth, getHandler);
 router.post('/', [...inventoryManageAuth, validate(createSchema)], createHandler);
 router.put('/:productId', [...inventoryManageAuth, validate(updateSchema)], updateHandler);
@@ -226,3 +404,4 @@ publicRouter.get('/offers', async (req, res, next) => {
 });
 
 export { router as inventoryRouter, publicRouter as publicProductsRouter };
+

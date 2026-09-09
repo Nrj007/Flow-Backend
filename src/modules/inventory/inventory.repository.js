@@ -67,6 +67,13 @@ export async function updateProduct(shopId, productId, data, actorUserId = null)
     description: data.description ?? existing.description,
     sku: data.sku !== undefined ? data.sku : existing.sku,
     barcode: data.barcode !== undefined ? data.barcode : existing.barcode,
+    batchNumber:
+      data.batchNumber !== undefined
+        ? data.batchNumber
+        : data.lotNumber !== undefined
+          ? data.lotNumber
+          : existing.batchNumber ?? existing.lotNumber,
+    mfgDate: data.mfgDate !== undefined ? data.mfgDate : existing.mfgDate,
     unitPrice: data.unitPrice ?? data.price ?? existing.unitPrice ?? existing.price,
     costPrice: data.costPrice ?? existing.costPrice ?? 0,
     quantityInStock:
@@ -101,6 +108,9 @@ export async function updateProduct(shopId, productId, data, actorUserId = null)
     description: normalized.description,
     sku: normalized.sku,
     barcode: normalized.barcode,
+    batchNumber: normalized.batchNumber,
+    lotNumber: normalized.lotNumber,
+    mfgDate: normalized.mfgDate,
     unitPrice: normalized.unitPrice,
     price: normalized.price,
     costPrice: normalized.costPrice,
@@ -150,3 +160,85 @@ export async function deleteProduct(shopId, productId) {
     })
   );
 }
+
+/**
+ * Bulk insert / update products with duplicate strategy handling.
+ */
+export async function bulkCreateOrUpdateProducts(
+  shopId,
+  items,
+  { duplicateStrategy = 'skip', actorUserId = null } = {}
+) {
+  const existingProducts = await listProducts(shopId);
+  const skuMap = new Map();
+  const barcodeMap = new Map();
+
+  existingProducts.forEach((p) => {
+    if (p.sku) skuMap.set(p.sku.toLowerCase(), p);
+    if (p.barcode) barcodeMap.set(p.barcode.toLowerCase(), p);
+  });
+
+  const created = [];
+  const updated = [];
+  const skipped = [];
+  const errors = [];
+
+  for (const [index, rawItem] of items.entries()) {
+    const rowNum = rawItem._rowIndex || index + 1;
+    try {
+      const sku = rawItem.sku?.trim() || null;
+      const barcode = rawItem.barcode?.trim() || null;
+
+      const existingBySku = sku ? skuMap.get(sku.toLowerCase()) : null;
+      const existingByBarcode = barcode ? barcodeMap.get(barcode.toLowerCase()) : null;
+      const existing = existingBySku || existingByBarcode;
+
+      if (existing) {
+        if (duplicateStrategy === 'skip') {
+          skipped.push({
+            row: rowNum,
+            name: rawItem.name || existing.name,
+            sku: sku || existing.sku,
+            reason: 'Existing SKU/Barcode already present (skipped)',
+          });
+          continue;
+        }
+
+        // Update strategy
+        const updatedProduct = await updateProduct(
+          shopId,
+          existing.productId,
+          rawItem,
+          actorUserId
+        );
+        updated.push(updatedProduct);
+      } else {
+        // Create new product
+        const newProduct = await createProduct(shopId, rawItem, actorUserId);
+        if (newProduct.sku) skuMap.set(newProduct.sku.toLowerCase(), newProduct);
+        if (newProduct.barcode) barcodeMap.set(newProduct.barcode.toLowerCase(), newProduct);
+        created.push(newProduct);
+      }
+    } catch (err) {
+      errors.push({
+        row: rowNum,
+        name: rawItem.name || 'Unknown',
+        sku: rawItem.sku || null,
+        error: err.message || 'Failed to process item',
+      });
+    }
+  }
+
+  return {
+    total: items.length,
+    createdCount: created.length,
+    updatedCount: updated.length,
+    skippedCount: skipped.length,
+    errorCount: errors.length,
+    created,
+    updated,
+    skipped,
+    errors,
+  };
+}
+
