@@ -17,6 +17,7 @@ import {
   getPasswordHash,
   getUserByEmail,
   getUserById,
+  setUserPassword,
   updateRefreshToken,
 } from '../users/user.repository.js';
 import { resolveUserPermissions } from '../../utils/permissions.js';
@@ -282,6 +283,53 @@ export async function verifyOtpHandler(req, res, next) {
         user: toPublicUser(user),
       },
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function forgotPasswordHandler(req, res, next) {
+  try {
+    const { email } = req.body;
+    if (!email) throw new AppError('Email is required', 400, 'EMAIL_REQUIRED');
+    const user = await getUserByEmail(email.toLowerCase());
+    if (!user || user.role === ROLES.STUDENT) {
+      return res.json({ success: true, message: 'If an account exists, an OTP was sent' });
+    }
+    const code = String(randomInt(100000, 1000000));
+    otpStore.set(`reset:${email.toLowerCase()}`, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+    const response = {
+      success: true,
+      message: 'If an account exists, an OTP was sent',
+    };
+    if (env.nodeEnv !== 'production') response.demoOtp = code;
+    res.json(response);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function resetPasswordHandler(req, res, next) {
+  try {
+    const { email, otp, password } = req.body;
+    if (!email || !otp || !password) {
+      throw new AppError('Email, OTP and new password are required', 400, 'FIELDS_REQUIRED');
+    }
+    if (String(password).length < 8) {
+      throw new AppError('Password must be at least 8 characters', 400, 'WEAK_PASSWORD');
+    }
+    const emailKey = `reset:${email.toLowerCase()}`;
+    const stored = otpStore.get(emailKey);
+    const valid = stored && stored.expiresAt > Date.now() && stored.code === otp;
+    if (!valid) throw new AppError('Invalid or expired OTP', 401, 'INVALID_OTP');
+
+    const user = await getUserByEmail(email.toLowerCase());
+    if (!user || user.role === ROLES.STUDENT) {
+      throw new AppError('Invalid or expired OTP', 401, 'INVALID_OTP');
+    }
+    await setUserPassword(user.userId, password);
+    otpStore.delete(emailKey);
+    res.json({ success: true, message: 'Password updated. You can sign in now.' });
   } catch (err) {
     next(err);
   }

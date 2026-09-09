@@ -9,10 +9,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { normalizePaymentMethod, PAYMENT_STATUS, ORDER_SUB_TYPES } from '../../constants/payments.js';
 import { docClient, TABLE_NAME } from '../../config/db.js';
 import { getStockQty, getTaxPercent, getUnitPrice } from '../../utils/product.js';
+import { splitGst } from '../../utils/gst.js';
 import { computeLinePricing, findActiveOfferForProduct, findActiveOrderUnderOffer, computeOrderUnderDiscount, getStockUnitsForLine } from '../../utils/offer.js';
 import { getProduct } from '../inventory/inventory.repository.js';
 import { listOffers } from '../offers/offer.repository.js';
 import { createVoucher, VOUCHER_TYPE } from '../gift-vouchers/gift-voucher.repository.js';
+import { getDepartment, buildQuotaChargeTransactItems } from '../departments/department.repository.js';
 
 export const ORDER_STATUS = {
   PENDING: 'pending',
@@ -107,6 +109,9 @@ async function buildOrderItems(shopId, items) {
       discount: pricing.totalDiscount,
       taxPercent: getTaxPercent(product),
       taxAmount: pricing.taxAmt,
+      hsnCode: product.hsnCode || null,
+      cgstAmount: splitGst(pricing.taxAmt).cgst,
+      sgstAmount: splitGst(pricing.taxAmt).sgst,
       lineTotal: pricing.lineTotal,
     });
   }
@@ -305,6 +310,45 @@ export async function createOrder({ studentId, shopId, items }) {
   return studentOrder;
 }
 
+export async function cancelStudentOrder({ studentId, orderId }) {
+  const studentResult = await docClient.send(
+    new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: `STUDENT#${studentId}`, SK: `ORDER#${orderId}` },
+    })
+  );
+  const studentOrder = studentResult.Item;
+  if (!studentOrder) throw new Error('Order not found');
+  if (studentOrder.status !== ORDER_STATUS.PENDING) {
+    throw new Error('Only pending orders can be cancelled');
+  }
+
+  const now = new Date().toISOString();
+  const transactItems = [
+    {
+      Update: {
+        TableName: TABLE_NAME,
+        Key: { PK: `STUDENT#${studentId}`, SK: `ORDER#${orderId}` },
+        UpdateExpression: 'SET #status = :st, updatedAt = :now',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':st': ORDER_STATUS.CANCELLED, ':now': now },
+      },
+    },
+    {
+      Update: {
+        TableName: TABLE_NAME,
+        Key: { PK: `SHOP#${studentOrder.shopId}`, SK: `ORDER#${orderId}` },
+        UpdateExpression: 'SET #status = :st, updatedAt = :now',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':st': ORDER_STATUS.CANCELLED, ':now': now },
+      },
+    },
+  ];
+
+  await docClient.send(new TransactWriteCommand({ TransactItems: transactItems }));
+  return { ...studentOrder, status: ORDER_STATUS.CANCELLED, updatedAt: now };
+}
+
 /**
  * Walk-in / on-site order. Can create as pending or fulfill immediately.
  */
@@ -392,7 +436,7 @@ export async function createOnsiteOrder({
     orderOfferType: orderOfferType || null,
     status,
     stockDeducted: shouldFulfill,
-    incomeRecorded: shouldFulfill,
+    incomeRecorded: shouldFulfill && resolvedPaymentStatus !== PAYMENT_STATUS.DUE,
     createdAt: now,
     updatedAt: now,
   };
@@ -401,10 +445,41 @@ export async function createOnsiteOrder({
 
   if (shouldFulfill) {
     transactItems.push(...stockDeductUpdates(shopId, orderItems, now));
-    transactItems.push(incomeTxnItem(shopId, shopOrder, createdBy, now));
+    if (resolvedPaymentStatus !== PAYMENT_STATUS.DUE) {
+      transactItems.push(incomeTxnItem(shopId, shopOrder, createdBy, now));
+    }
   }
 
-  await docClient.send(new TransactWriteCommand({ TransactItems: transactItems }));
+  if (normalizedPayment === 'dept_quota') {
+    if (!deptId) throw new Error('Department is required for dept quota payment');
+    const dept = await getDepartment(shopId, deptId);
+    if (!dept) throw new Error('Department not found');
+    const remaining = Number(dept.remainingBalance) || 0;
+    if (remaining < finalTotal) {
+      throw new Error(
+        `Insufficient department quota. Remaining: ₹${remaining.toFixed(2)}, Required: ₹${finalTotal.toFixed(2)}`
+      );
+    }
+    transactItems.push(
+      ...buildQuotaChargeTransactItems(shopId, dept, {
+        amount: finalTotal,
+        orderId,
+        requisitionRef: requisitionRef || '',
+        authorizedBy: authorizedBy || '',
+        note: `POS sale ${orderId.slice(-8)}`,
+        now,
+      })
+    );
+  }
+
+  try {
+    await docClient.send(new TransactWriteCommand({ TransactItems: transactItems }));
+  } catch (err) {
+    if (err?.name === 'TransactionCanceledException' || err?.name === 'ConditionalCheckFailedException') {
+      throw new Error('Could not complete sale. Check stock levels and department quota, then try again.');
+    }
+    throw err;
+  }
   return shopOrder;
 }
 
@@ -539,23 +614,38 @@ export async function settleDuePayment(shopId, orderId, {
   }
 
   const now = new Date().toISOString();
-  await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { PK: `SHOP#${shopId}`, SK: `ORDER#${orderId}` },
-      UpdateExpression:
-        'SET paymentStatus = :ps, paymentMethod = :pm, cashReceived = :cr, changeAmount = :ca, dueSettledAt = :dsa, updatedAt = :now',
-      ExpressionAttributeValues: {
-        ':ps': PAYMENT_STATUS.PAID,
-        ':pm': normalizedPayment,
-        ':cr': cashReceived != null ? Number(cashReceived) : null,
-        ':ca': changeAmount != null ? Number(changeAmount) : null,
-        ':dsa': now,
-        ':now': now,
+  const transactItems = [
+    {
+      Update: {
+        TableName: TABLE_NAME,
+        Key: { PK: `SHOP#${shopId}`, SK: `ORDER#${orderId}` },
+        UpdateExpression:
+          'SET paymentStatus = :ps, paymentMethod = :pm, cashReceived = :cr, changeAmount = :ca, dueSettledAt = :dsa, incomeRecorded = :ir, updatedAt = :now',
+        ExpressionAttributeValues: {
+          ':ps': PAYMENT_STATUS.PAID,
+          ':pm': normalizedPayment,
+          ':cr': cashReceived != null ? Number(cashReceived) : null,
+          ':ca': changeAmount != null ? Number(changeAmount) : null,
+          ':dsa': now,
+          ':ir': true,
+          ':now': now,
+        },
       },
-    })
-  );
+    },
+  ];
 
+  if (!order.incomeRecorded) {
+    transactItems.push(
+      incomeTxnItem(
+        shopId,
+        { ...order, paymentMethod: normalizedPayment },
+        order.createdBy,
+        now
+      )
+    );
+  }
+
+  await docClient.send(new TransactWriteCommand({ TransactItems: transactItems }));
   return getShopOrder(shopId, orderId);
 }
 

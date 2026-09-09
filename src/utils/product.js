@@ -162,6 +162,7 @@ export function normalizeProductInput(data) {
         ? !!data.availableOnline
         : (data.status || 'active') === 'active',
     taxPercent: Math.max(0, Math.min(100, Number(data.taxPercent ?? 0))),
+    hsnCode: String(data.hsnCode || '').trim() || null,
   };
 }
 

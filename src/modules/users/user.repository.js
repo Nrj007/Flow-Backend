@@ -196,6 +196,10 @@ export async function getPasswordHash(user) {
   return null;
 }
 
+export async function setUserPassword(userId, password) {
+  return updateShopUser(userId, { password });
+}
+
 export async function listShopUsers(shopId) {
   const result = await docClient.send(
     new QueryCommand({

@@ -59,6 +59,7 @@ const productObjectSchema = z.object({
   expiryDate: z.string().optional().nullable(),
   availableOnline: z.boolean().optional(),
   taxPercent: z.number().min(0).max(100).optional(),
+  hsnCode: z.string().optional().nullable(),
   isBundle: z.boolean().optional(),
   bundleComponents: z
     .array(

@@ -12,6 +12,7 @@ import {
   getShopById,
   listShopsWithManagers,
   updateShop,
+  listCampusSalesOverview,
 } from './shop.repository.js';
 
 const createShopSchema = z.object({
@@ -104,6 +105,15 @@ export async function getShopAnalyticsHandler(req, res, next) {
   }
 }
 
+export async function getCampusOverviewHandler(_req, res, next) {
+  try {
+    const rows = await listCampusSalesOverview();
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export { createShopSchema, updateShopSchema };
 export const shopRouteDefs = {
   createShopHandler,
@@ -112,6 +122,7 @@ export const shopRouteDefs = {
   updateShopHandler,
   deleteShopHandler,
   getShopAnalyticsHandler,
+  getCampusOverviewHandler,
   middleware: {
     superAdminOnly: [authenticate, authorize(ROLES.SUPER_ADMIN)],
     shopRead: [

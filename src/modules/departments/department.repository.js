@@ -196,13 +196,13 @@ export async function chargeDepartmentQuota(shopId, deptId, {
       new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { PK: `SHOP#${shopId}`, SK: `DEPT#${deptId}` },
-        UpdateExpression: 'SET spentAmount = :sa, remainingBalance = :rb, updatedAt = :now',
+        UpdateExpression:
+          'SET remainingBalance = remainingBalance - :charge, spentAmount = if_not_exists(spentAmount, :zero) + :charge, updatedAt = :now',
         ConditionExpression: 'remainingBalance >= :charge',
         ExpressionAttributeValues: {
-          ':sa': newSpent,
-          ':rb': newRemaining,
-          ':now': now,
           ':charge': charge,
+          ':zero': 0,
+          ':now': now,
         },
       })
     );
@@ -243,6 +243,56 @@ export async function chargeDepartmentQuota(shopId, deptId, {
   });
 
   return { ...dept, spentAmount: newSpent, remainingBalance: newRemaining, txId };
+}
+
+/** DynamoDB transact items: atomic quota debit + ledger row (same table as orders). */
+export function buildQuotaChargeTransactItems(shopId, dept, {
+  amount,
+  orderId = null,
+  requisitionRef = '',
+  authorizedBy = '',
+  note = '',
+  now = new Date().toISOString(),
+}) {
+  const charge = Number(amount) || 0;
+  const txId = uuidv4();
+  return [
+    {
+      Update: {
+        TableName: TABLE_NAME,
+        Key: { PK: `SHOP#${shopId}`, SK: `DEPT#${dept.deptId}` },
+        UpdateExpression:
+          'SET remainingBalance = remainingBalance - :charge, spentAmount = if_not_exists(spentAmount, :zero) + :charge, updatedAt = :now',
+        ConditionExpression: 'remainingBalance >= :charge',
+        ExpressionAttributeValues: {
+          ':charge': charge,
+          ':zero': 0,
+          ':now': now,
+        },
+      },
+    },
+    {
+      Put: {
+        TableName: TABLE_NAME,
+        Item: {
+          PK: `SHOP#${shopId}`,
+          SK: `DEPTTX#${dept.deptId}#${now}#${txId}`,
+          entityType: 'DEPARTMENT_TX',
+          txId,
+          deptId: dept.deptId,
+          shopId,
+          deptName: dept.name,
+          amount: charge,
+          orderId,
+          requisitionRef,
+          authorizedBy: authorizedBy || 'HOD Approval',
+          type: 'charge',
+          note,
+          createdAt: now,
+        },
+      },
+    },
+  ];
 }
 
 export async function listDepartmentTransactions(shopId, deptId = null) {

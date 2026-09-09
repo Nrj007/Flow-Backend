@@ -4,6 +4,7 @@ import {
   createShopSchema,
   deleteShopHandler,
   getShopAnalyticsHandler,
+  getCampusOverviewHandler,
   getShopHandler,
   listShopsHandler,
   shopRouteDefs,
@@ -31,6 +32,11 @@ router.post(
   createShopHandler
 );
 router.get('/', ...shopRouteDefs.middleware.superAdminOnly, listShopsHandler);
+router.get(
+  '/campus-overview',
+  ...shopRouteDefs.middleware.superAdminOnly,
+  getCampusOverviewHandler
+);
 router.get(
   '/:shopId/analytics',
   ...shopRouteDefs.middleware.superAdminOnly,

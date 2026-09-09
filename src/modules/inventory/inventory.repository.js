@@ -90,6 +90,7 @@ export async function updateProduct(shopId, productId, data, actorUserId = null)
         ? data.availableOnline
         : existing.availableOnline,
     taxPercent: data.taxPercent ?? existing.taxPercent ?? 0,
+    hsnCode: data.hsnCode !== undefined ? data.hsnCode : existing.hsnCode,
     supplier:
       data.supplier !== undefined
         ? data.supplier
@@ -128,6 +129,7 @@ export async function updateProduct(shopId, productId, data, actorUserId = null)
     expiryDate: normalized.expiryDate,
     availableOnline: normalized.availableOnline,
     taxPercent: normalized.taxPercent,
+    hsnCode: normalized.hsnCode,
     updatedAt: now,
     updatedBy: actorUserId || existing.updatedBy || null,
   };

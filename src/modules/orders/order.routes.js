@@ -24,13 +24,14 @@ import {
   listOrderAdjustments,
   listShopOrders,
   listStudentOrders,
+  cancelStudentOrder,
   ORDER_STATUS,
   updateOrderItems,
   updateOrderLoyalty,
   updateOrderStatus,
   settleDuePayment,
 } from './order.repository.js';
-import { chargeDepartmentQuota, getDepartment } from '../departments/department.repository.js';
+import { getDepartment } from '../departments/department.repository.js';
 
 const placeOrderSchema = z.object({
   body: z.object({
@@ -143,7 +144,8 @@ function mapOrderError(err, next) {
     err.message?.includes('outstanding due') ||
     err.message?.includes('collection method') ||
     err.message?.includes('Department is required') ||
-    err.message?.includes('Insufficient department quota')
+    err.message?.includes('Insufficient department quota') ||
+    err.message?.includes('Could not complete sale')
   ) {
     return next(new AppError(err.message, 400, 'ORDER_ERROR'));
   }
@@ -188,6 +190,23 @@ studentRouter.get(
       res.json({ success: true, data: orders });
     } catch (err) {
       next(err);
+    }
+  }
+);
+
+studentRouter.post(
+  '/:orderId/cancel',
+  authenticate,
+  authorize(ROLES.STUDENT),
+  async (req, res, next) => {
+    try {
+      const order = await cancelStudentOrder({
+        studentId: req.user.userId,
+        orderId: req.params.orderId,
+      });
+      res.json({ success: true, data: order });
+    } catch (err) {
+      mapOrderError(err, next);
     }
   }
 );
@@ -245,9 +264,10 @@ shopRouter.post(
     try {
       const paymentMethod = normalizePaymentMethod(req.body.paymentMethod);
       const customerName = req.body.customerName || 'Customer';
-      const currentShift = paymentMethod === 'cash'
-        ? await getCurrentShift(req.params.shopId)
-        : null;
+      const currentShift = await getCurrentShift(req.params.shopId);
+      if (!currentShift) {
+        throw new AppError('Open a cash shift before completing a sale', 400, 'SHIFT_REQUIRED');
+      }
       const orderSubType = req.body.orderSubType === ORDER_SUB_TYPES.KOT
         ? ORDER_SUB_TYPES.KOT
         : ORDER_SUB_TYPES.SALE;
@@ -302,18 +322,6 @@ shopRouter.post(
         requisitionRef: req.body.requisitionRef || null,
         authorizedBy: req.body.authorizedBy || null,
       });
-
-      if (paymentMethod === 'dept_quota') {
-        await chargeDepartmentQuota(req.params.shopId, req.body.deptId, {
-          amount: order.total,
-          orderId: order.orderId,
-          requisitionRef: req.body.requisitionRef || '',
-          authorizedBy: req.body.authorizedBy || '',
-          note: `POS sale ${order.orderId.slice(-8)}`,
-          actorId: req.user.userId,
-          actorName: req.user.name,
-        });
-      }
 
       // If voucher code was used and discount > 0, redeem from voucher balance
       if (req.body.voucherCode && (Number(req.body.voucherDiscount) || 0) > 0) {

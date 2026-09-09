@@ -348,8 +348,13 @@ export async function getShopAnalytics(shopId) {
 
   let income = 0;
   let expense = 0;
+  const today = new Date().toISOString().slice(0, 10);
+  let todayIncome = 0;
   for (const txn of transactions) {
-    if (txn.type === 'income') income += txn.amount;
+    if (txn.type === 'income') {
+      income += txn.amount;
+      if (String(txn.createdAt || '').startsWith(today)) todayIncome += txn.amount;
+    }
     if (txn.type === 'expense') expense += txn.amount;
   }
 
@@ -401,6 +406,7 @@ export async function getShopAnalytics(shopId) {
     finance: {
       income,
       expense,
+      todayIncome,
       balance: income - expense,
       transactionCount: transactions.length,
       recentTransactions: transactions.slice(0, 5).map((t) => ({
@@ -429,6 +435,10 @@ export async function getShopAnalytics(shopId) {
       total: orders.length,
       byStatus: ordersByStatus,
       revenue: orderRevenue,
+      dueOutstanding: orders
+        .filter((o) => o.paymentStatus === 'due' && o.status !== 'cancelled')
+        .reduce((sum, o) => sum + (Number(o.total) || 0), 0),
+      dueCount: orders.filter((o) => o.paymentStatus === 'due' && o.status !== 'cancelled').length,
       recentOrders: orders.slice(0, 5).map((o) => ({
         orderId: o.orderId,
         status: o.status,
@@ -438,4 +448,27 @@ export async function getShopAnalytics(shopId) {
       })),
     },
   };
+}
+
+export async function listCampusSalesOverview() {
+  const shops = await listShopsWithManagers();
+  const rows = [];
+  for (const shop of shops) {
+    const analytics = await getShopAnalytics(shop.shopId);
+    if (!analytics) continue;
+    rows.push({
+      shopId: shop.shopId,
+      name: shop.name,
+      address: shop.address,
+      managerName: analytics.manager?.name || shop.manager?.name || null,
+      income: analytics.finance.income,
+      expense: analytics.finance.expense,
+      balance: analytics.finance.balance,
+      todayIncome: analytics.finance.todayIncome || 0,
+      pendingOrders: analytics.orders.byStatus.pending || 0,
+      dueOutstanding: analytics.orders.dueOutstanding || 0,
+      dueCount: analytics.orders.dueCount || 0,
+    });
+  }
+  return rows;
 }
