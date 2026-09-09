@@ -11,6 +11,10 @@ import {
   createUser,
   getUserByEmail,
 } from '../src/modules/users/user.repository.js';
+import {
+  createDepartment,
+  listDepartments,
+} from '../src/modules/departments/department.repository.js';
 import { seedSuperAdmin } from '../src/utils/seed.js';
 
 dotenv.config();
@@ -266,6 +270,28 @@ async function seedDemoAccounts() {
     secondaryShopId = secResult.shop.shopId;
     console.log(`Secondary branch created: Hostel Block B Store (${secondaryShopId})`);
     await seedPosProducts(secondaryShopId);
+  }
+
+  // Seed demo departments
+  const existingDepts = await listDepartments(shopId);
+  if (existingDepts.length === 0) {
+    await createDepartment(shopId, {
+      name: 'Department of Computer Science',
+      code: 'CSE',
+      hodName: 'Dr. Rajesh Sharma',
+      email: 'hod.cse@campus.edu',
+      allocatedQuota: 35000,
+      createdBy: 'seed-script',
+    });
+    await createDepartment(shopId, {
+      name: 'Department of Mechanical Engineering',
+      code: 'MECH',
+      hodName: 'Dr. Anand Verma',
+      email: 'hod.mech@campus.edu',
+      allocatedQuota: 25000,
+      createdBy: 'seed-script',
+    });
+    console.log('Demo departments seeded (CSE: ₹35,000, MECH: ₹25,000)');
   }
 
   console.log('\n========================================');
