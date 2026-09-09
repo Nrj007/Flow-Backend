@@ -28,7 +28,9 @@ import {
   updateOrderItems,
   updateOrderLoyalty,
   updateOrderStatus,
+  settleDuePayment,
 } from './order.repository.js';
+import { chargeDepartmentQuota, getDepartment } from '../departments/department.repository.js';
 
 const placeOrderSchema = z.object({
   body: z.object({
@@ -60,8 +62,12 @@ const onsiteOrderSchema = z.object({
     customerId: z.string().uuid().optional().nullable(),
     customerEmail: z.string().optional().nullable(),
     customerPhone: z.string().optional().nullable(),
-    paymentMethod: z.enum(['cash', 'upi', 'card', 'due', 'other']).optional(),
+    paymentMethod: z.enum(['cash', 'upi', 'card', 'dept_quota', 'due', 'other']).optional(),
     paymentStatus: z.enum(['paid', 'due']).optional(),
+    deptId: z.string().uuid().optional().nullable(),
+    deptName: z.string().optional().nullable(),
+    requisitionRef: z.string().optional().nullable(),
+    authorizedBy: z.string().optional().nullable(),
     cashReceived: z.number().optional().nullable(),
     changeAmount: z.number().optional().nullable(),
     pointsRedeemed: z.number().nonnegative().optional(),
@@ -112,6 +118,15 @@ const adjustOrderSchema = z.object({
   params: z.object({ shopId: z.string().uuid(), orderId: z.string().uuid() }),
 });
 
+const settleDueSchema = z.object({
+  body: z.object({
+    paymentMethod: z.enum(['cash', 'upi', 'card', 'other']),
+    cashReceived: z.number().optional().nullable(),
+    changeAmount: z.number().optional().nullable(),
+  }),
+  params: z.object({ shopId: z.string().uuid(), orderId: z.string().uuid() }),
+});
+
 function mapOrderError(err, next) {
   if (
     err.message?.includes('Insufficient stock') ||
@@ -124,7 +139,11 @@ function mapOrderError(err, next) {
     err.message?.includes('Cannot return') ||
     err.message?.includes('Cannot refund') ||
     err.message?.includes('Adjustment') ||
-    err.message?.includes('Select at least')
+    err.message?.includes('Select at least') ||
+    err.message?.includes('outstanding due') ||
+    err.message?.includes('collection method') ||
+    err.message?.includes('Department is required') ||
+    err.message?.includes('Insufficient department quota')
   ) {
     return next(new AppError(err.message, 400, 'ORDER_ERROR'));
   }
@@ -198,6 +217,7 @@ shopRouter.get('/', shopOrderReadAuth, async (req, res, next) => {
       to: req.query.to || undefined,
       status: req.query.status || undefined,
       orderType: req.query.orderType || undefined,
+      paymentStatus: req.query.paymentStatus || undefined,
       page: req.query.page,
       limit: req.query.limit,
     });
@@ -235,6 +255,16 @@ shopRouter.post(
         ? false
         : (req.body.fulfillImmediately ?? true);
 
+      if (paymentMethod === 'dept_quota') {
+        if (!req.body.deptId) {
+          throw new AppError('Department is required for dept quota payment', 400, 'ORDER_ERROR');
+        }
+        const dept = await getDepartment(req.params.shopId, req.body.deptId);
+        if (!dept) {
+          throw new AppError('Department not found', 404, 'NOT_FOUND');
+        }
+      }
+
       let pointsEarned = 0;
       let linkedCustomerId = req.body.customerId || null;
 
@@ -262,7 +292,23 @@ shopRouter.post(
         orderSubType,
         billingAction: req.body.billingAction || null,
         isEbill: req.body.isEbill ?? false,
+        deptId: req.body.deptId || null,
+        deptName: req.body.deptName || null,
+        requisitionRef: req.body.requisitionRef || null,
+        authorizedBy: req.body.authorizedBy || null,
       });
+
+      if (paymentMethod === 'dept_quota') {
+        await chargeDepartmentQuota(req.params.shopId, req.body.deptId, {
+          amount: order.total,
+          orderId: order.orderId,
+          requisitionRef: req.body.requisitionRef || '',
+          authorizedBy: req.body.authorizedBy || '',
+          note: `POS sale ${order.orderId.slice(-8)}`,
+          actorId: req.user.userId,
+          actorName: req.user.name,
+        });
+      }
 
       // If voucher code was used and discount > 0, redeem from voucher balance
       if (req.body.voucherCode && (Number(req.body.voucherDiscount) || 0) > 0) {
@@ -374,6 +420,36 @@ shopRouter.put(
         req.body.items
       );
       if (!order) throw new AppError('Order not found', 404, 'NOT_FOUND');
+      res.json({ success: true, data: order });
+    } catch (err) {
+      mapOrderError(err, next);
+    }
+  }
+);
+
+shopRouter.post(
+  '/:orderId/settle-due',
+  [...shopOrderManageAuth, validate(settleDueSchema)],
+  async (req, res, next) => {
+    try {
+      const order = await settleDuePayment(req.params.shopId, req.params.orderId, {
+        paymentMethod: req.body.paymentMethod,
+        cashReceived: req.body.cashReceived != null ? Number(req.body.cashReceived) : null,
+        changeAmount: req.body.changeAmount != null ? Number(req.body.changeAmount) : null,
+      });
+      await createAuditEntry({
+        shopId: req.params.shopId,
+        action: 'due_payment_settled',
+        entityType: 'ORDER',
+        entityId: order.orderId,
+        actorId: req.user.userId,
+        actorName: req.user.name,
+        after: {
+          paymentMethod: order.paymentMethod,
+          paymentStatus: order.paymentStatus,
+          total: order.total,
+        },
+      });
       res.json({ success: true, data: order });
     } catch (err) {
       mapOrderError(err, next);

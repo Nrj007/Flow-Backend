@@ -332,6 +332,10 @@ export async function createOnsiteOrder({
   orderSubType = ORDER_SUB_TYPES.SALE,
   billingAction = null,
   isEbill = false,
+  deptId = null,
+  deptName = null,
+  requisitionRef = null,
+  authorizedBy = null,
 }) {
   const orderId = uuidv4();
   const now = new Date().toISOString();
@@ -366,6 +370,10 @@ export async function createOnsiteOrder({
     customerPhone: customerPhone || null,
     paymentMethod: normalizedPayment,
     paymentStatus: resolvedPaymentStatus,
+    deptId: deptId || null,
+    deptName: deptName || null,
+    requisitionRef: requisitionRef || null,
+    authorizedBy: authorizedBy || null,
     cashReceived: cashReceived != null ? Number(cashReceived) : null,
     changeAmount: changeAmount != null ? Number(changeAmount) : null,
     shiftId: shiftId || null,
@@ -436,6 +444,7 @@ export async function listShopOrders(shopId, options = {}) {
     to,
     status,
     orderType,
+    paymentStatus,
     page = 1,
     limit = 25,
   } = options;
@@ -459,6 +468,9 @@ export async function listShopOrders(shopId, options = {}) {
   }
   if (status) {
     items = items.filter((o) => o.status === status);
+  }
+  if (paymentStatus) {
+    items = items.filter((o) => (o.paymentStatus || PAYMENT_STATUS.PAID) === paymentStatus);
   }
   if (orderType === ORDER_TYPE.SALE) {
     items = items.filter((o) => (o.orderType || ORDER_TYPE.SALE) === ORDER_TYPE.SALE);
@@ -505,6 +517,46 @@ export async function getShopOrder(shopId, orderId) {
     })
   );
   return result.Item ? normalizeOrderTotals(result.Item) : null;
+}
+
+export async function settleDuePayment(shopId, orderId, {
+  paymentMethod,
+  cashReceived = null,
+  changeAmount = null,
+}) {
+  const order = await getShopOrder(shopId, orderId);
+  if (!order) throw new Error('Order not found');
+  if (order.paymentStatus !== PAYMENT_STATUS.DUE) {
+    throw new Error('This order does not have an outstanding due balance');
+  }
+  if ((order.orderType || ORDER_TYPE.SALE) !== ORDER_TYPE.SALE) {
+    throw new Error('Only sale orders can be settled');
+  }
+
+  const normalizedPayment = normalizePaymentMethod(paymentMethod);
+  if (normalizedPayment === 'due' || normalizedPayment === 'dept_quota') {
+    throw new Error('Select a valid collection method (cash, UPI, card, or other)');
+  }
+
+  const now = new Date().toISOString();
+  await docClient.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: `SHOP#${shopId}`, SK: `ORDER#${orderId}` },
+      UpdateExpression:
+        'SET paymentStatus = :ps, paymentMethod = :pm, cashReceived = :cr, changeAmount = :ca, dueSettledAt = :dsa, updatedAt = :now',
+      ExpressionAttributeValues: {
+        ':ps': PAYMENT_STATUS.PAID,
+        ':pm': normalizedPayment,
+        ':cr': cashReceived != null ? Number(cashReceived) : null,
+        ':ca': changeAmount != null ? Number(changeAmount) : null,
+        ':dsa': now,
+        ':now': now,
+      },
+    })
+  );
+
+  return getShopOrder(shopId, orderId);
 }
 
 export async function updateOrderStatus(shopId, orderId, status, actorUserId) {

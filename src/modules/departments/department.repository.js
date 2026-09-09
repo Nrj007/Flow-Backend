@@ -1,4 +1,4 @@
-import { PutCommand, QueryCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, PutCommand, QueryCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { docClient, TABLE_NAME } from '../../config/db.js';
 import { createAuditEntry } from '../audit/audit.repository.js';
@@ -14,7 +14,7 @@ export async function listDepartments(shopId) {
       },
     })
   );
-  return result.Items ?? [];
+  return (result.Items ?? []).filter((item) => item.entityType === 'DEPARTMENT');
 }
 
 export async function getDepartment(shopId, deptId) {
@@ -76,6 +76,30 @@ export async function createDepartment(shopId, {
   });
 
   return item;
+}
+
+export async function deleteDepartment(shopId, deptId, { actorId = null, actorName = null } = {}) {
+  const dept = await getDepartment(shopId, deptId);
+  if (!dept) throw new Error('Department not found');
+
+  await docClient.send(
+    new DeleteCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: `SHOP#${shopId}`, SK: `DEPT#${deptId}` },
+    })
+  );
+
+  await createAuditEntry({
+    shopId,
+    action: 'department_deleted',
+    entityType: 'department',
+    entityId: deptId,
+    actorId,
+    actorName,
+    before: { name: dept.name, remainingBalance: dept.remainingBalance },
+  });
+
+  return dept;
 }
 
 export async function topUpDepartmentQuota(shopId, deptId, {
@@ -167,18 +191,27 @@ export async function chargeDepartmentQuota(shopId, deptId, {
   const newSpent = (Number(dept.spentAmount) || 0) + charge;
   const newRemaining = currentRemaining - charge;
 
-  await docClient.send(
-    new UpdateCommand({
-      TableName: TABLE_NAME,
-      Key: { PK: `SHOP#${shopId}`, SK: `DEPT#${deptId}` },
-      UpdateExpression: 'SET spentAmount = :sa, remainingBalance = :rb, updatedAt = :now',
-      ExpressionAttributeValues: {
-        ':sa': newSpent,
-        ':rb': newRemaining,
-        ':now': now,
-      },
-    })
-  );
+  try {
+    await docClient.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { PK: `SHOP#${shopId}`, SK: `DEPT#${deptId}` },
+        UpdateExpression: 'SET spentAmount = :sa, remainingBalance = :rb, updatedAt = :now',
+        ConditionExpression: 'remainingBalance >= :charge',
+        ExpressionAttributeValues: {
+          ':sa': newSpent,
+          ':rb': newRemaining,
+          ':now': now,
+          ':charge': charge,
+        },
+      })
+    );
+  } catch (err) {
+    if (err?.name === 'ConditionalCheckFailedException') {
+      throw new Error(`Insufficient department quota. Remaining: ₹${currentRemaining.toFixed(2)}, Required: ₹${charge.toFixed(2)}`);
+    }
+    throw err;
+  }
 
   // Record ledger transaction
   const txItem = {

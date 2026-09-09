@@ -1,4 +1,4 @@
-export const PAYMENT_METHODS = ['cash', 'upi', 'card', 'due', 'other'];
+export const PAYMENT_METHODS = ['cash', 'upi', 'card', 'dept_quota', 'due', 'other'];
 
 export const PAYMENT_STATUS = {
   PAID: 'paid',
@@ -22,6 +22,7 @@ export function paymentMethodLabel(method) {
     cash: 'Cash',
     upi: 'UPI',
     card: 'Card',
+    dept_quota: 'Dept Quota',
     due: 'Due',
     other: 'Other',
   };

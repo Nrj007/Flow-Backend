@@ -45,6 +45,10 @@ export async function createHold(shopId, {
   ebillHtml = null,
   pointsRedeemed = 0,
   voucherCode = null,
+  deptId = null,
+  deptName = null,
+  requisitionRef = null,
+  authorizedBy = null,
 }) {
   const holdId = uuidv4();
   const now = new Date().toISOString();
@@ -81,6 +85,10 @@ export async function createHold(shopId, {
     pointsRedeemed: Math.max(0, Number(pointsRedeemed) || 0),
     voucherCode: voucherCode || null,
     ebillHtml: ebillHtml || null,
+    deptId: deptId || null,
+    deptName: deptName || null,
+    requisitionRef: requisitionRef || null,
+    authorizedBy: authorizedBy || null,
     createdBy,
     createdAt: now,
     savedAt: now,
