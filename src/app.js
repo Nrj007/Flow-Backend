@@ -21,6 +21,7 @@ import shiftRoutes from './modules/shifts/shift.routes.js';
 import auditRoutes from './modules/audit/audit.routes.js';
 import notificationRoutes from './modules/notifications/notification.routes.js';
 import reportRoutes from './modules/reports/report.routes.js';
+import transferRoutes from './modules/transfers/transfer.routes.js';
 
 const app = express();
 
@@ -54,6 +55,7 @@ app.use('/api/shops/:shopId/gift-vouchers', giftVoucherRoutes);
 app.use('/api/shops/:shopId/orders', shopRouter);
 app.use('/api/shops/:shopId/purchase-orders', purchaseOrderRoutes);
 app.use('/api/shops/:shopId/shifts', shiftRoutes);
+app.use('/api/shops/:shopId/transfers', transferRoutes);
 app.use('/api/shops/:shopId/audit', auditRoutes);
 app.use('/api/shops/:shopId/reports', reportRoutes);
 app.use('/api/orders', studentRouter);

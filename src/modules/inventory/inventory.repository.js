@@ -74,6 +74,8 @@ export async function updateProduct(shopId, productId, data, actorUserId = null)
           ? data.lotNumber
           : existing.batchNumber ?? existing.lotNumber,
     mfgDate: data.mfgDate !== undefined ? data.mfgDate : existing.mfgDate,
+    isBundle: data.isBundle !== undefined ? data.isBundle : existing.isBundle,
+    bundleComponents: data.bundleComponents !== undefined ? data.bundleComponents : existing.bundleComponents,
     unitPrice: data.unitPrice ?? data.price ?? existing.unitPrice ?? existing.price,
     costPrice: data.costPrice ?? existing.costPrice ?? 0,
     quantityInStock:
@@ -111,6 +113,8 @@ export async function updateProduct(shopId, productId, data, actorUserId = null)
     batchNumber: normalized.batchNumber,
     lotNumber: normalized.lotNumber,
     mfgDate: normalized.mfgDate,
+    isBundle: normalized.isBundle,
+    bundleComponents: normalized.bundleComponents,
     unitPrice: normalized.unitPrice,
     price: normalized.price,
     costPrice: normalized.costPrice,

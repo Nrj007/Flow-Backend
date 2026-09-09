@@ -58,13 +58,29 @@ async function buildOrderItems(shopId, items) {
     if (!product) {
       throw new Error(`Product not found: ${item.productId}`);
     }
-    const stock = getStockQty(product);
     const unitPrice = getUnitPrice(product);
-
     const offer = findActiveOfferForProduct(item.productId, offers);
     const physicalQuantity = getStockUnitsForLine(item.quantity);
-    if (stock < physicalQuantity) {
-      throw new Error(`Insufficient stock for ${product.name}`);
+
+    // Bundle / Combo Component Checking
+    const isBundleProduct = !!product.isBundle && Array.isArray(product.bundleComponents) && product.bundleComponents.length > 0;
+    if (isBundleProduct) {
+      for (const comp of product.bundleComponents) {
+        const compProduct = await getProduct(shopId, comp.productId);
+        if (!compProduct) {
+          throw new Error(`Bundle component product missing: ${comp.name || comp.productId}`);
+        }
+        const compStock = getStockQty(compProduct);
+        const requiredUnits = (Number(comp.quantity) || 1) * item.quantity;
+        if (compStock < requiredUnits) {
+          throw new Error(`Insufficient stock for combo item: ${comp.name || compProduct.name} (Need ${requiredUnits}, Available ${compStock})`);
+        }
+      }
+    } else {
+      const stock = getStockQty(product);
+      if (stock < physicalQuantity) {
+        throw new Error(`Insufficient stock for ${product.name}`);
+      }
     }
 
     const pricing = computeLinePricing({
@@ -83,6 +99,8 @@ async function buildOrderItems(shopId, items) {
       price: unitPrice,
       quantity: item.quantity,
       physicalQuantity,
+      isBundle: isBundleProduct,
+      bundleComponents: isBundleProduct ? product.bundleComponents : undefined,
       discPct: item.discPct ?? 0,
       offerType: offer?.type || null,
       offerDiscount: pricing.offerDiscount,
@@ -101,40 +119,85 @@ async function buildOrderItems(shopId, items) {
 }
 
 function stockDeductUpdates(shopId, orderItems, now) {
-  return orderItems.map((item) => {
-    const deductQty = item.physicalQuantity ?? item.quantity;
-    return {
-      Update: {
-        TableName: TABLE_NAME,
-        Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${item.productId}` },
-        UpdateExpression:
-          'SET quantity = quantity - :qty, quantityInStock = if_not_exists(quantityInStock, quantity) - :qty, updatedAt = :now',
-        ConditionExpression: 'quantity >= :qty',
-        ExpressionAttributeValues: {
-          ':qty': deductQty,
-          ':now': now,
+  const deductions = [];
+
+  for (const item of orderItems) {
+    if (item.isBundle && Array.isArray(item.bundleComponents) && item.bundleComponents.length > 0) {
+      for (const comp of item.bundleComponents) {
+        const compQty = (Number(comp.quantity) || 1) * (item.quantity || 1);
+        deductions.push({
+          Update: {
+            TableName: TABLE_NAME,
+            Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${comp.productId}` },
+            UpdateExpression:
+              'SET quantity = quantity - :qty, quantityInStock = if_not_exists(quantityInStock, quantity) - :qty, updatedAt = :now',
+            ConditionExpression: 'quantity >= :qty',
+            ExpressionAttributeValues: {
+              ':qty': compQty,
+              ':now': now,
+            },
+          },
+        });
+      }
+    } else {
+      const deductQty = item.physicalQuantity ?? item.quantity;
+      deductions.push({
+        Update: {
+          TableName: TABLE_NAME,
+          Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${item.productId}` },
+          UpdateExpression:
+            'SET quantity = quantity - :qty, quantityInStock = if_not_exists(quantityInStock, quantity) - :qty, updatedAt = :now',
+          ConditionExpression: 'quantity >= :qty',
+          ExpressionAttributeValues: {
+            ':qty': deductQty,
+            ':now': now,
+          },
         },
-      },
-    };
-  });
+      });
+    }
+  }
+
+  return deductions;
 }
 
 function stockRestoreUpdates(shopId, restoreItems, now) {
-  return restoreItems.map((item) => {
-    const restoreQty = item.physicalQuantity ?? item.quantity;
-    return {
-      Update: {
-        TableName: TABLE_NAME,
-        Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${item.productId}` },
-        UpdateExpression:
-          'SET quantity = quantity + :qty, quantityInStock = if_not_exists(quantityInStock, quantity) + :qty, updatedAt = :now',
-        ExpressionAttributeValues: {
-          ':qty': restoreQty,
-          ':now': now,
+  const restores = [];
+
+  for (const item of restoreItems) {
+    if (item.isBundle && Array.isArray(item.bundleComponents) && item.bundleComponents.length > 0) {
+      for (const comp of item.bundleComponents) {
+        const compQty = (Number(comp.quantity) || 1) * (item.quantity || 1);
+        restores.push({
+          Update: {
+            TableName: TABLE_NAME,
+            Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${comp.productId}` },
+            UpdateExpression:
+              'SET quantity = quantity + :qty, quantityInStock = if_not_exists(quantityInStock, quantity) + :qty, updatedAt = :now',
+            ExpressionAttributeValues: {
+              ':qty': compQty,
+              ':now': now,
+            },
+          },
+        });
+      }
+    } else {
+      const restoreQty = item.physicalQuantity ?? item.quantity;
+      restores.push({
+        Update: {
+          TableName: TABLE_NAME,
+          Key: { PK: `SHOP#${shopId}`, SK: `PRODUCT#${item.productId}` },
+          UpdateExpression:
+            'SET quantity = quantity + :qty, quantityInStock = if_not_exists(quantityInStock, quantity) + :qty, updatedAt = :now',
+          ExpressionAttributeValues: {
+            ':qty': restoreQty,
+            ':now': now,
+          },
         },
-      },
-    };
-  });
+      });
+    }
+  }
+
+  return restores;
 }
 
 function refundTxnItem(shopId, order, amount, createdBy, now, label) {

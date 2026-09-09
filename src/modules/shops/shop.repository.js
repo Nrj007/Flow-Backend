@@ -30,6 +30,8 @@ export async function getShopById(shopId) {
   return result.Item ?? null;
 }
 
+export const getShop = getShopById;
+
 export async function listAllShopMetadata() {
   const result = await docClient.send(
     new QueryCommand({

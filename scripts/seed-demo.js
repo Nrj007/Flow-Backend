@@ -248,13 +248,34 @@ async function seedDemoAccounts() {
   console.log('\nSeeding POS test products...\n');
   await seedPosProducts(shopId);
 
+  // Seed a secondary campus branch so Inter-Shop Transfers have a destination store
+  const secondaryEmail = 'hostel.manager@flow.local';
+  const existingSecondaryManager = await getUserByEmail(secondaryEmail);
+  let secondaryShopId = existingSecondaryManager?.shopId ?? null;
+
+  if (!existingSecondaryManager) {
+    const secResult = await createShopWithManager({
+      name: 'Hostel Block B Store',
+      address: 'North Campus Hostel Complex',
+      managerEmail: secondaryEmail,
+      managerPassword: 'Manager123!',
+      managerName: 'Hostel Store Manager',
+      managerPermissions: ROLE_DEFAULT_PERMISSIONS[ROLES.SHOP_MANAGER],
+      createdBy: 'seed-script',
+    });
+    secondaryShopId = secResult.shop.shopId;
+    console.log(`Secondary branch created: Hostel Block B Store (${secondaryShopId})`);
+    await seedPosProducts(secondaryShopId);
+  }
+
   console.log('\n========================================');
   console.log('  Demo login credentials');
   console.log('========================================');
-  console.log(`Super Admin  ${env.superAdmin.email} / ${env.superAdmin.password}`);
-  console.log(`Manager      ${DEMO.manager.email} / ${DEMO.manager.password}`);
-  console.log(`Staff        ${DEMO.staff.email} / ${DEMO.staff.password}`);
-  console.log(`Student      ${DEMO.student.email} / ${DEMO.student.password}`);
+  console.log(`Super Admin      ${env.superAdmin.email} / ${env.superAdmin.password}`);
+  console.log(`Main Manager     ${DEMO.manager.email} / ${DEMO.manager.password}`);
+  console.log(`Hostel Manager   ${secondaryEmail} / Manager123!`);
+  console.log(`Staff            ${DEMO.staff.email} / ${DEMO.staff.password}`);
+  console.log(`Student          ${DEMO.student.email} / ${DEMO.student.password}`);
   console.log('========================================\n');
 }
 

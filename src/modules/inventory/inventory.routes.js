@@ -59,6 +59,17 @@ const productObjectSchema = z.object({
   expiryDate: z.string().optional().nullable(),
   availableOnline: z.boolean().optional(),
   taxPercent: z.number().min(0).max(100).optional(),
+  isBundle: z.boolean().optional(),
+  bundleComponents: z
+    .array(
+      z.object({
+        productId: z.string(),
+        name: z.string().optional(),
+        quantity: z.number().int().positive().optional(),
+        unitPrice: z.number().optional(),
+      })
+    )
+    .optional(),
 });
 
 const productCreateBodySchema = productObjectSchema.superRefine((data, ctx) => {
