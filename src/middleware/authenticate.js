@@ -21,11 +21,16 @@ async function attachUser(req, decoded) {
 export async function authenticate(req, _res, next) {
   const authHeader = req.headers.authorization;
 
-  if (!authHeader?.startsWith('Bearer ')) {
+  // EventSource (SSE) cannot send custom headers, so we also accept
+  // a token passed as ?token= query param as a fallback.
+  let token;
+  if (authHeader?.startsWith('Bearer ')) {
+    token = authHeader.slice(7);
+  } else if (req.query?.token) {
+    token = String(req.query.token);
+  } else {
     return next(new AppError('Authentication required', 401, 'UNAUTHORIZED'));
   }
-
-  const token = authHeader.slice(7);
 
   try {
     const decoded = verifyAccessToken(token);

@@ -1,6 +1,7 @@
-﻿import { PutCommand, QueryCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand, QueryCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { docClient, TABLE_NAME } from '../../config/db.js';
+import { sendToUser } from '../../utils/sse.js';
 
 export async function createNotification({
   userId,
@@ -25,6 +26,7 @@ export async function createNotification({
     createdAt: now,
   };
   await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
+  sendToUser(userId, 'notification:new', item);
   return item;
 }
 
@@ -60,6 +62,7 @@ export async function markNotificationRead(userId, notifId) {
       ReturnValues: 'ALL_NEW',
     })
   );
+  sendToUser(userId, 'notification:read', { notifId });
   return result.Attributes;
 }
 
@@ -67,5 +70,7 @@ export async function markAllRead(userId) {
   const all = await listNotifications(userId, 200);
   const unread = all.filter((n) => !n.read);
   await Promise.all(unread.map((n) => markNotificationRead(userId, n.notifId)));
+  sendToUser(userId, 'notification:read-all', {});
   return { updated: unread.length };
 }
+

@@ -1,4 +1,4 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate.js';
 import { AppError } from '../../middleware/errorHandler.js';
 import {
@@ -7,8 +7,19 @@ import {
   markAllRead,
   markNotificationRead,
 } from './notification.repository.js';
+import { initSSEConnection, userClients } from '../../utils/sse.js';
 
 const router = Router();
+
+/**
+ * SSE stream — push real-time notifications for the authenticated user.
+ * GET /api/notifications/events
+ */
+router.get('/events', authenticate, (req, res) => {
+  const userId = req.user.userId;
+  const cleanup = initSSEConnection(res, userId, userClients);
+  req.on('close', cleanup);
+});
 
 router.get('/', authenticate, async (req, res, next) => {
   try {

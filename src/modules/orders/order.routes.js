@@ -32,6 +32,8 @@ import {
   settleDuePayment,
 } from './order.repository.js';
 import { getDepartment } from '../departments/department.repository.js';
+import { listShopUsers } from '../users/user.repository.js';
+import { initSSEConnection, sendToUser, sendToShop, userClients, shopClients } from '../../utils/sse.js';
 
 const placeOrderSchema = z.object({
   body: z.object({
@@ -173,6 +175,29 @@ studentRouter.post(
         title: 'Order placed',
         body: `Order ${order.orderId.slice(-8)} was placed successfully.`,
       });
+      // Push real-time SSE event to shop managers/staff watching this shop
+      sendToShop(req.body.shopId, 'order:new', {
+        orderId: order.orderId,
+        status: order.status,
+        shopId: req.body.shopId,
+        order,
+      });
+      // Notify shop managers and staff so their notification badge & inbox update in real time
+      listShopUsers(req.body.shopId)
+        .then((users) => {
+          for (const u of users) {
+            if (u.userId) {
+              createNotification({
+                userId: u.userId,
+                shopId: req.body.shopId,
+                type: 'order_received',
+                title: 'New order received',
+                body: `Order ${order.orderId.slice(-8)} was received.`,
+              }).catch(() => {});
+            }
+          }
+        })
+        .catch(() => {});
       res.status(201).json({ success: true, data: order });
     } catch (err) {
       mapOrderError(err, next);
@@ -204,10 +229,36 @@ studentRouter.post(
         studentId: req.user.userId,
         orderId: req.params.orderId,
       });
+      if (order?.shopId) {
+        sendToShop(order.shopId, 'order:status', {
+          orderId: order.orderId,
+          status: order.status,
+          shopId: order.shopId,
+        });
+      }
+      sendToUser(req.user.userId, 'order:status', {
+        orderId: order.orderId,
+        status: order.status,
+      });
       res.json({ success: true, data: order });
     } catch (err) {
       mapOrderError(err, next);
     }
+  }
+);
+
+/**
+ * SSE stream — student receives live order-status pushes for their own orders.
+ * GET /api/orders/events
+ */
+studentRouter.get(
+  '/events',
+  authenticate,
+  authorize(ROLES.STUDENT),
+  (req, res) => {
+    const userId = req.user.userId;
+    const cleanup = initSSEConnection(res, userId, userClients);
+    req.on('close', cleanup);
   }
 );
 
@@ -244,6 +295,16 @@ shopRouter.get('/', shopOrderReadAuth, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+/**
+ * SSE stream — shop managers/staff receive live order-status pushes for their shop.
+ * GET /api/shops/:shopId/orders/events
+ */
+shopRouter.get('/events', shopOrderReadAuth, (req, res) => {
+  const shopId = req.params.shopId;
+  const cleanup = initSSEConnection(res, shopId, shopClients);
+  req.on('close', cleanup);
 });
 
 shopRouter.get('/:orderId', shopOrderReadAuth, async (req, res, next) => {
@@ -367,6 +428,14 @@ shopRouter.post(
         });
       }
 
+      // Push real-time SSE event to shop managers/staff watching this shop
+      sendToShop(req.params.shopId, 'order:new', {
+        orderId: order.orderId,
+        status: order.status,
+        shopId: req.params.shopId,
+        order,
+      });
+
       res.status(201).json({
         success: true,
         data: {
@@ -414,7 +483,17 @@ shopRouter.patch(
           title: `Order ${req.body.status}`,
           body: `Your order ${order.orderId.slice(-8)} is now ${req.body.status}.`,
         });
+        // Push real-time SSE event to the student
+        sendToUser(order.studentId, 'order:status', {
+          orderId: order.orderId,
+          status: req.body.status,
+        });
       }
+      // Push real-time SSE event to all shop staff/managers watching this shop
+      sendToShop(req.params.shopId, 'order:status', {
+        orderId: order.orderId,
+        status: req.body.status,
+      });
       res.json({ success: true, data: order });
     } catch (err) {
       mapOrderError(err, next);
